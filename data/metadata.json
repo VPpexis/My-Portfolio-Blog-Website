@@ -1,0 +1,21 @@
+{
+    "profile": {
+        "name": "Van Philip Panugan",
+        "title": "Software Engineer",
+        "description": "Specializing in building scalable, performance-driven web applications with a focus on automated CI/CD pipelines and cloud infrastructure."
+    },
+    "projects": [
+        {
+            "title": "Project_1",
+            "description": "Desc",
+            "tags": ["tags1", "tags2"],
+            "link": "link[.]com"
+        },
+        {
+            "title": "Project_2",
+            "description": "Desc",
+            "tags": ["tags1", "tags2"],
+            "link": "link[.]com"
+        }
+    ]
+}
