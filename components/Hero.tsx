@@ -13,14 +13,14 @@ export function Hero() {
                     {metadata.profile.description}
                 </p>
                 <div className='mt-10 flex items-center justify-center gap-x-6'>
-                    <Button variant='outline'>
+                    <Button variant='outline' asChild>
                         <Link href='/projects' className='text-sm font-semibold leading-6'>
                             View Projects
                         </Link>
                     </Button>
-                    <a href ='/about' className='text-sm font-semibold leading-6'>
+                    <Link href='/about' className='text-sm font-semibold leading-6'>
                         Learn More <span aria-hidden='true'>→</span>
-                    </a>
+                    </Link>
                 </div>
             </div>
         </section>

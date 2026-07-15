@@ -13,7 +13,7 @@
 # testing
 /coverage
 
-# sanity
+# astro
 dist/
 
 # next.js

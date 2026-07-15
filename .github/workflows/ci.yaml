@@ -39,5 +39,5 @@ jobs:
         run: pnpm build
         env:
           NODE_ENV: "placeholder"
-          NEXT_PUBLIC_SANITY_PROJECT_ID: "placeholder"
-          NEXT_PUBLIC_SANITY_DATASET: "placeholder"
+          NEXT_PUBLIC_ASTRO_PROJECT_ID: "placeholder"
+          NEXT_PUBLIC_ASTRO_DATASET: "placeholder"
