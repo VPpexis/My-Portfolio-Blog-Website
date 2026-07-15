@@ -1,0 +1,38 @@
+{
+    "profile": {
+        "name": "Van Philip Panugan",
+        "title": "Software Engineer",
+        "description": "Specializing in building scalable, performance-driven web applications with a focus on automated CI/CD pipelines and cloud infrastructure."
+    },
+    "socials": {
+        "github": "https://github.com/VPpexis",
+        "linkedin": "https://www.linkedin.com/in/vanpanugan",
+        "email": "hello@example.com"
+    },
+    "projects": [
+        {
+            "title": "CPE106L-ProjectCovidRecon",
+            "author": "VPpexis",
+            "description": "Specializing in building scalable, performance-driven web applications with a focus on automated CI/CD pipelines and cloud infrastructure.",
+            "tags": ["python", "data science"],
+            "link": "https://github.com/VPpexis/CPE106L-ProjectCovidRecon",
+            "image": "/assets/covid_recon.png"
+        },
+        {
+            "title": "Jzaki Enterprises Website",
+            "description": "A dedicated brand showcase for a local food manufacturing enterprise. This platform modernizes product discovery for traditional Filipino treats, highlighting quality production standards and streamlining customer inquiries through a clean, mobile-first interface.",
+            "tags": ["Next.js", "Web Dev"],
+            "link": "https://www.jzaki.com",
+            "image": "/assets/jzaki_website.png"
+        }
+    ],
+    "skills": [
+        { "name": "Typescript", "icon": "SiTypescript" },
+        { "name": "Javascript", "icon": "SiJavascript" },
+        { "name": "Python", "icon": "SiPython" },
+        { "name": "Next.js", "icon": "SiNextdotjs" },
+        { "name": "AWS", "icon": "FaAws" },
+        { "name": "Docker", "icon": "SiDocker" },
+        { "name": "Linux", "icon": "SiLinux" }
+    ]
+}
