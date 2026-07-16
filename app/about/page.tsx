@@ -69,8 +69,6 @@ const domains = [
   },
 ]
 
-const hobbyImages: HobbyImage[] = []
-
 export default function AboutPage() {
   return (
     <>
