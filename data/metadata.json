@@ -7,13 +7,13 @@
     "socials": {
         "github": "https://github.com/VPpexis",
         "linkedin": "https://www.linkedin.com/in/vanpanugan",
-        "email": "hello@example.com"
+        "email": "panuganvanphilip@gmail.com"
     },
     "projects": [
         {
             "title": "CPE106L-ProjectCovidRecon",
             "author": "VPpexis",
-            "description": "Specializing in building scalable, performance-driven web applications with a focus on automated CI/CD pipelines and cloud infrastructure.",
+            "description": "Project-CovidRecon is a software application based from PyQt5 and Tweepy that tracks statuses of the number of Coronavirus Disease 2019 in National Captional Region in the Philippines.",
             "tags": ["python", "data science"],
             "link": "https://github.com/VPpexis/CPE106L-ProjectCovidRecon",
             "image": "/assets/covid_recon.png"
