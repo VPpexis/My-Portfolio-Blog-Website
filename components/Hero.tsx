@@ -1,28 +1,48 @@
-import { Button } from "./ui/button";
-import Link from 'next/link';
-import metadata from '@/data/metadata.json' with { type: "json" };
+import Link from "next/link"
+import { ArrowRight } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { AnimatedGreeting } from "./AnimatedGreeting"
+import siteData from "@/data/metadata.json"
 
 export function Hero() {
-    return (
-        <section className='flex min-h-[7vh] flex-col items-center justify-center px-6 py-48 text-center'>
-            <div className='max-w-3xl'>
-                <h1 className='text-4xl font-bold mb-4 tracking-tight sm:text-6xl antialiased'>
-                    Hi I&apos;m {metadata.profile.name}
-                </h1>
-                <p className='mt-6 text-lg leading-9 text-muted-foreground'>
-                    {metadata.profile.description}
-                </p>
-                <div className='mt-10 flex items-center justify-center gap-x-6'>
-                    <Button variant='outline' asChild>
-                        <Link href='/projects' className='text-sm font-semibold leading-6'>
-                            View Projects
-                        </Link>
-                    </Button>
-                    <Link href='/about' className='text-sm font-semibold leading-6'>
-                        Learn More <span aria-hidden='true'>→</span>
-                    </Link>
-                </div>
-            </div>
-        </section>
-    );
+  return (
+    <section className="relative flex min-h-[60vh] flex-col items-center justify-center px-4 py-24 sm:px-6 lg:px-8 mb-12">
+      <div className="max-w-3xl text-center">
+        <p className="text-sm font-semibold tracking-widest uppercase text-primary mb-4">
+          {siteData.profile.title}
+        </p>
+
+        <h1 className="text-4xl font-bold tracking-tight sm:text-5xl md:text-6xl text-balance">
+          <AnimatedGreeting />! 
+        </h1>
+        <h1 className="text-4xl font-bold tracking-tight sm:text-5xl md:text-6xl text-balance">
+          <span className="text-foreground">I&apos;m {siteData.profile.name}</span>
+        </h1>
+
+        <p className="mt-6 text-lg leading-relaxed text-muted-foreground max-w-2xl mx-auto text-balance">
+          {siteData.profile.description}
+        </p>
+
+        <div className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
+          <Button asChild size="lg">
+            <Link href="/projects">
+              View Projects
+              <ArrowRight className="h-4 w-4" />
+            </Link>
+          </Button>
+          <Button variant="outline" size="lg" asChild>
+            <Link href="/contact">Get In Touch</Link>
+          </Button>
+          <Button variant="ghost" size="lg" asChild>
+            <Link href="/about">
+              Learn More
+              <span aria-hidden="true" className="ml-1">
+                →
+              </span>
+            </Link>
+          </Button>
+        </div>
+      </div>
+    </section>
+  )
 }

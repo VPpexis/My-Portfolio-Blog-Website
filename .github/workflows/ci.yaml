@@ -32,6 +32,9 @@ jobs:
       - name: Run Linting
         run: pnpm lint
 
+      - name: Build Content Layer
+        run: pnpm velite build
+
       - name: Type Check
         run: pnpm exec tsc --noEmit
 

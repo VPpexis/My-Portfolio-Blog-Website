@@ -2,33 +2,52 @@
     "profile": {
         "name": "Van Philip Panugan",
         "title": "Software Engineer",
-        "description": "Specializing in building scalable, performance-driven web applications with a focus on automated CI/CD pipelines and cloud infrastructure."
+        "description": "An emerging developer on a mission to learn, build, and grow—exploring the intersection of web development, cloud technology, and AI one challenge at a time."
     },
     "socials": {
         "github": "https://github.com/VPpexis",
         "linkedin": "https://www.linkedin.com/in/vanpanugan",
-        "email": "hello@example.com"
+        "email": "panuganvanphilip@gmail.com"
     },
     "projects": [
         {
             "title": "CPE106L-ProjectCovidRecon",
-            "author": "VPpexis",
-            "description": "Specializing in building scalable, performance-driven web applications with a focus on automated CI/CD pipelines and cloud infrastructure.",
-            "tags": ["python", "data science"],
+            "description": "A PyQt5 and Tweepy-based desktop application that tracks and visualizes COVID-19 case statuses across the National Capital Region in the Philippines.",
+            "tags": ["Python", "Data Science", "PyQt5", "Personal"],
+            "category": "Personal",
+            "type": "Desktop",
             "link": "https://github.com/VPpexis/CPE106L-ProjectCovidRecon",
-            "image": "/assets/covid_recon.png"
+            "github": "https://github.com/VPpexis/CPE106L-ProjectCovidRecon",
+            "image": "/assets/covid_recon.png",
+            "featured": false,
+            "role": "Developer",
+            "duration": "2020",
+            "technologies": ["Python", "Tweepy", "PyQt5", "Pandas"],
+            "challenges": "Aggregating real-time social data and presenting it through an intuitive desktop UI during the early pandemic.",
+            "solutions": "Built a scheduled data pipeline with Tweepy and visualized trends using PyQt5 widgets.",
+            "results": "Delivered a working prototype that helped visualize regional case trends for academic assessment."
         },
         {
             "title": "Jzaki Enterprises Website",
-            "description": "A dedicated brand showcase for a local food manufacturing enterprise. This platform modernizes product discovery for traditional Filipino treats, highlighting quality production standards and streamlining customer inquiries through a clean, mobile-first interface.",
-            "tags": ["Next.js", "Web Dev"],
+            "description": "A brand showcase and customer inquiry platform for a local food manufacturing enterprise, modernizing product discovery for traditional Filipino treats.",
+            "tags": ["Next.js", "React", "Tailwind CSS", "Web Dev", "Professional"],
+            "category": "Professional",
+            "type": "Frontend",
             "link": "https://www.jzaki.com",
-            "image": "/assets/jzaki_website.png"
+            "github": "https://github.com/VPpexis",
+            "image": "/assets/jzaki_website.png",
+            "featured": true,
+            "role": "Frontend Engineer",
+            "duration": "2024",
+            "technologies": ["Next.js", "React", "Tailwind CSS", "Vercel"],
+            "challenges": "Creating a mobile-first experience that respects the brand's heritage while improving customer inquiries.",
+            "solutions": "Implemented a clean component system, responsive layouts, and clear call-to-action flows.",
+            "results": "Improved online presence and streamlined customer engagement for the business."
         }
     ],
     "skills": [
-        { "name": "Typescript", "icon": "SiTypescript" },
-        { "name": "Javascript", "icon": "SiJavascript" },
+        { "name": "TypeScript", "icon": "SiTypescript" },
+        { "name": "JavaScript", "icon": "SiJavascript" },
         { "name": "Python", "icon": "SiPython" },
         { "name": "Next.js", "icon": "SiNextdotjs" },
         { "name": "AWS", "icon": "FaAws" },
