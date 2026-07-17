@@ -89,7 +89,7 @@ export default function AboutPage() {
             </div>
 
             <div className="md:col-span-2 flex justify-center">
-              <div className="rounded-2xl bg-gradient-to-br from-primary to-accent p-1">
+              <div className="rrelative h-64 w-64 sm:h-72 sm:w-72 [clip-path:polygon(50%_0%,_100%_25%,_100%_75%,_50%_100%,_0%_75%,_0%_25%)] bg-black p-[2px]">
                 <div className="relative h-64 w-64 overflow-hidden rounded-xl bg-background sm:h-72 sm:w-72">
                   <Image
                     src="/assets/personal_photo.jpg"
@@ -97,7 +97,7 @@ export default function AboutPage() {
                     fill
                     priority
                     sizes="(max-width: 768px) 256px, 288px"
-                    className="object-cover object-top"
+                    className="object-cover object-mid"
                   />
                 </div>
               </div>
@@ -190,6 +190,9 @@ export default function AboutPage() {
                   View Projects
                   <ArrowRight className="h-4 w-4" />
                 </Link>
+              </Button>
+              <Button size="lg" asChild>
+                <Link href="/blog">Read Blog</Link>
               </Button>
               <Button variant="outline" size="lg" asChild>
                 <Link href="/contact">Get In Touch</Link>

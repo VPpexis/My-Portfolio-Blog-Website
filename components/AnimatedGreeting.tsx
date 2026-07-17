@@ -7,7 +7,6 @@ const greetings = [
   { lang: "en", text: "Hi" },
   { lang: "zh", text: "你好" },
   { lang: "es", text: "Hola" },
-  { lang: "tl", text: "Kamusta" },
 ]
 
 export function AnimatedGreeting() {
