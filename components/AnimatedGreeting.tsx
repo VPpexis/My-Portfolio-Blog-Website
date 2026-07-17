@@ -7,6 +7,7 @@ const greetings = [
   { lang: "en", text: "Hi" },
   { lang: "zh", text: "你好" },
   { lang: "es", text: "Hola" },
+  { lang: "tl", text: "Kamusta" },
 ]
 
 export function AnimatedGreeting() {
@@ -15,23 +16,27 @@ export function AnimatedGreeting() {
   useEffect(() => {
     const id = setInterval(
       () => setIndex((i) => (i + 1) % greetings.length),
-      2000,
+      2000
     )
     return () => clearInterval(id)
   }, [])
 
   return (
-    <span className="inline-grid justify-items-end align-baseline">
+    <span
+      className="inline-grid justify-items-center align-baseline"
+      aria-live="polite"
+      aria-atomic="true"
+    >
       {greetings.map((greeting, i) => (
         <span
           key={greeting.lang}
           lang={greeting.lang}
           aria-hidden={i !== index}
           className={cn(
-            "col-start-1 row-start-1",
+            "col-start-1 row-start-1 transition-all duration-500",
             i === index
-              ? "animate-in fade-in slide-in-from-bottom-3 duration-500"
-              : "invisible",
+              ? "visible opacity-100 translate-y-0"
+              : "invisible opacity-0 translate-y-2"
           )}
         >
           {greeting.text}

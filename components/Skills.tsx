@@ -1,25 +1,42 @@
-import * as SiIcons from "react-icons/si"
-import * as FaIcons from "react-icons/fa"
 import type { IconType } from "react-icons"
+import {
+  SiDocker,
+  SiJavascript,
+  SiLinux,
+  SiNextdotjs,
+  SiPython,
+  SiTypescript,
+} from "react-icons/si"
+import { FaAws } from "react-icons/fa"
 import metadata from "@/data/metadata.json"
+import { Container } from "@/components/ui/container"
+import { Section } from "@/components/ui/section"
+import { SectionHeader } from "@/components/ui/section-header"
+import { cn } from "@/lib/utils"
+
+const iconMap: Record<string, IconType> = {
+  SiTypescript,
+  SiJavascript,
+  SiPython,
+  SiNextdotjs,
+  FaAws,
+  SiDocker,
+  SiLinux,
+}
 
 function resolveIcon(iconName: string): IconType | null {
-  if (iconName.startsWith("Si")) {
-    return (SiIcons as Record<string, IconType>)[iconName] ?? null
-  }
-  if (iconName.startsWith("Fa")) {
-    return (FaIcons as Record<string, IconType>)[iconName] ?? null
-  }
-  return null
+  return iconMap[iconName] ?? null
 }
 
 export function Skills() {
   return (
-    <section id="skills" className="py-20 px-6">
-      <div className="max-w-6xl mx-auto">
-        <h2 className="text-3xl font-bold mb-10 text-center antialiased">
-          Skills &amp; Technologies
-        </h2>
+    <Section id="skills" variant="muted">
+      <Container>
+        <SectionHeader
+          eyebrow="Toolkit"
+          title="Skills & Technologies"
+          description="Languages, frameworks, and platforms I use to design, build, and ship reliable software."
+        />
 
         <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-7 gap-4">
           {metadata.skills.map((skill) => {
@@ -28,12 +45,18 @@ export function Skills() {
             return (
               <div
                 key={skill.name}
-                className="flex flex-col items-center gap-3 p-5 rounded-xl border bg-card text-card-foreground shadow-sm hover:shadow-md hover:border-primary/40 transition-all duration-200"
+                className={cn(
+                  "group flex flex-col items-center gap-3 rounded-xl border bg-card p-4 text-card-foreground",
+                  "transition-all duration-200 hover:shadow-md hover:border-primary/30 hover:-translate-y-0.5"
+                )}
               >
                 {Icon ? (
-                  <Icon className="h-9 w-9 text-primary" />
+                  <Icon
+                    className="h-8 w-8 text-primary transition-transform duration-200 group-hover:scale-110"
+                    aria-hidden="true"
+                  />
                 ) : (
-                  <div className="h-9 w-9 rounded bg-muted" />
+                  <div className="h-8 w-8 rounded bg-muted" aria-hidden="true" />
                 )}
                 <span className="text-xs font-medium text-muted-foreground text-center leading-tight">
                   {skill.name}
@@ -42,7 +65,7 @@ export function Skills() {
             )
           })}
         </div>
-      </div>
-    </section>
+      </Container>
+    </Section>
   )
 }

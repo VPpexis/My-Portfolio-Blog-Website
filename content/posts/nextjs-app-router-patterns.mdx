@@ -1,0 +1,66 @@
+---
+title: "Next.js App Router Patterns I Wish I Knew Earlier"
+slug: nextjs-app-router-patterns
+description: "From server components to data fetching — patterns that make the App Router feel less like a maze and more like a well-lit hallway."
+date: 2025-05-22
+updatedAt: 2025-06-01
+tags: ["Next.js", "React", "TypeScript"]
+category: "Frontend"
+---
+
+The App Router is powerful, but the learning curve is real. Here are the patterns that clicked for me after shipping a few production apps with it.
+
+## Server Components by Default
+
+The biggest mental shift: think of your component tree as *server-first*. Only reach for `"use client"` when you need interactivity — onClick handlers, state, effects, or browser APIs.
+
+```tsx
+// This is a Server Component by default. No 'use client' needed.
+// It runs on the server, fetches data, and ships HTML to the client.
+
+import { posts } from '#site/content'
+
+export default async function BlogPage() {
+  const published = posts.filter(p => !p.isDraft)
+  return <ArticleList posts={published} />
+}
+```
+
+## The Data Fetching Sweet Spot
+
+Skip `useEffect` for data. Use `async` Server Components with `fetch` directly in the component body. Next.js handles caching and deduplication automatically.
+
+```tsx
+async function getPost(slug: string) {
+  // This fetch is automatically memoized by Next.js
+  const res = await fetch(`https://api.example.com/posts/${slug}`)
+  return res.json()
+}
+```
+
+## Colocate Components
+
+Put page-specific components right next to the page file. If only `/blog` uses `ArticleCard`, put it in `app/blog/_components/ArticleCard.tsx`. Keep the top-level `components/` directory for shared UI only.
+
+## Streaming and Suspense
+
+Wrap slow data fetches in `<Suspense>` boundaries to unblock the initial page paint:
+
+```tsx
+import { Suspense } from 'react'
+
+export default function Page() {
+  return (
+    <div>
+      <h1>Dashboard</h1>
+      <Suspense fallback={<StatsSkeleton />}>
+        <Stats />
+      </Suspense>
+    </div>
+  )
+}
+```
+
+## The Bottom Line
+
+The App Router rewards thinking in terms of *data dependencies*, not component lifecycles. Once that clicks, the patterns become second nature.
