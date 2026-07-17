@@ -6,15 +6,17 @@ import siteData from "@/data/metadata.json"
 
 export function Hero() {
   return (
-    <section className="relative flex min-h-[60vh] flex-col items-center justify-center px-4 py-24 sm:px-6 lg:px-8">
+    <section className="relative flex min-h-[60vh] flex-col items-center justify-center px-4 py-24 sm:px-6 lg:px-8 mb-12">
       <div className="max-w-3xl text-center">
         <p className="text-sm font-semibold tracking-widest uppercase text-primary mb-4">
           {siteData.profile.title}
         </p>
 
         <h1 className="text-4xl font-bold tracking-tight sm:text-5xl md:text-6xl text-balance">
-          <AnimatedGreeting />! I&apos;m{" "}
-          <span className="text-foreground">{siteData.profile.name}</span>
+          <AnimatedGreeting />! 
+        </h1>
+        <h1 className="text-4xl font-bold tracking-tight sm:text-5xl md:text-6xl text-balance">
+          <span className="text-foreground">I&apos;m {siteData.profile.name}</span>
         </h1>
 
         <p className="mt-6 text-lg leading-relaxed text-muted-foreground max-w-2xl mx-auto text-balance">
