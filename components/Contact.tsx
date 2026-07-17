@@ -1,38 +1,38 @@
-import { ArrowUpRight } from "lucide-react"
 import Link from "next/link"
+import { ArrowUpRight } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Container } from "@/components/ui/container"
+import { Section } from "@/components/ui/section"
+import { SectionHeader } from "@/components/ui/section-header"
 import { socialLinks } from "@/lib/socials"
 
 export function Contact() {
   return (
-    <section id="contact" className="py-20 px-6">
-      <div className="max-w-2xl mx-auto text-center">
-        <h2 className="text-3xl font-bold mb-4 antialiased">Get In Touch</h2>
+    <Section id="contact">
+      <Container size="small">
+        <SectionHeader
+          title="Get In Touch"
+          description="I'm always open to new opportunities, collaborations, or just a friendly chat. Reach out through any of the channels below."
+        />
 
-        <p className="text-muted-foreground text-lg leading-relaxed mb-10">
-          I&apos;m always open to new opportunities, collaborations, or just a
-          friendly chat. Feel free to reach out through any of the channels
-          below.
-        </p>
-
-        <div className="flex flex-wrap items-center justify-center gap-4">
+        <div className="flex flex-wrap items-center justify-center gap-3">
           {socialLinks.map(({ platform, label, href, external, icon: Icon }) => (
             <Button key={platform} variant="outline" size="lg" asChild>
               <Link
                 href={href}
-                target={external ? "_blank" : "_self"}
-                rel="noopener noreferrer"
+                target={external ? "_blank" : undefined}
+                rel={external ? "noopener noreferrer" : undefined}
               >
-                <Icon className="h-5 w-5" />
+                <Icon className="h-5 w-5" aria-hidden="true" />
                 <span>{label}</span>
                 {external && (
-                  <ArrowUpRight className="h-3.5 w-3.5 opacity-60" />
+                  <ArrowUpRight className="h-3.5 w-3.5 opacity-60" aria-hidden="true" />
                 )}
               </Link>
             </Button>
           ))}
         </div>
-      </div>
-    </section>
+      </Container>
+    </Section>
   )
 }

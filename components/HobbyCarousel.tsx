@@ -4,7 +4,6 @@ import * as React from "react"
 import Image from "next/image"
 import Autoplay from "embla-carousel-autoplay"
 import { ImageIcon } from "lucide-react"
-
 import {
   Carousel,
   CarouselContent,
@@ -27,7 +26,7 @@ function Placeholder() {
 
 export function HobbyCarousel({ images }: { images: HobbyImage[] }) {
   const [autoplay] = React.useState(() =>
-    Autoplay({ delay: 3000, stopOnInteraction: false }),
+    Autoplay({ delay: 3000, stopOnInteraction: false })
   )
 
   if (images.length === 0) {
@@ -39,6 +38,7 @@ export function HobbyCarousel({ images }: { images: HobbyImage[] }) {
       opts={{ loop: true }}
       plugins={[autoplay]}
       className="w-full"
+      aria-label="Hobby photo carousel"
     >
       <CarouselContent>
         {images.map((image) => (
