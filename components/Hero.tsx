@@ -13,7 +13,7 @@ export function Hero() {
         </p>
 
         <h1 className="text-4xl font-bold tracking-tight sm:text-5xl md:text-6xl text-balance">
-          <AnimatedGreeting />! 
+          <AnimatedGreeting />
         </h1>
         <h1 className="text-4xl font-bold tracking-tight sm:text-5xl md:text-6xl text-balance">
           <span className="text-foreground">I&apos;m {siteData.profile.name}</span>
