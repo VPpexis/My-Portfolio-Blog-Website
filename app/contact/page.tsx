@@ -1,6 +1,5 @@
 import Link from "next/link"
 import { Mail, ArrowRight } from "lucide-react"
-import { SiGithub } from "react-icons/si"
 import { LinkedInIcon } from "@/components/icons"
 import { Container } from "@/components/ui/container"
 import { PageHeader } from "@/components/ui/page-header"
@@ -22,12 +21,6 @@ const contactMethods = [
     value: siteData.socials.email,
     href: `mailto:${siteData.socials.email}`,
     icon: Mail,
-  },
-  {
-    label: "GitHub",
-    value: "VPpexis",
-    href: siteData.socials.github,
-    icon: SiGithub,
   },
   {
     label: "LinkedIn",

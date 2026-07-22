@@ -58,7 +58,7 @@ export function Projects() {
         <SectionHeader
           eyebrow="Portfolio"
           title="Featured Projects"
-          description="A selection of projects that represent my strongest work across full-stack development, cloud infrastructure, and developer tooling."
+          description=""
           action={
             <Button
               variant="ghost"
