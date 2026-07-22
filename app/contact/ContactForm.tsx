@@ -18,25 +18,35 @@ export function ContactForm() {
       >
         <div className="grid sm:grid-cols-2 gap-5">
           <div className="space-y-2">
-            <Label htmlFor="name">Name</Label>
+            <Label htmlFor="firstName">First Name</Label>
             <Input
-              id="name"
-              name="name"
+              id="firstName"
+              name="firstName"
               type="text"
-              placeholder="John Doe"
+              placeholder="John"
               required
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="email">Email</Label>
+            <Label htmlFor="lastName">Last Name</Label>
             <Input
-              id="email"
-              name="email"
-              type="email"
-              placeholder="john@example.com"
+              id="lastName"
+              name="lastName"
+              type="text"
+              placeholder="Doe"
               required
             />
           </div>
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="email">Email</Label>
+          <Input
+            id="email"
+            name="email"
+            type="email"
+            placeholder="john@example.com"
+            required
+          />
         </div>
 
         <div className="space-y-2">

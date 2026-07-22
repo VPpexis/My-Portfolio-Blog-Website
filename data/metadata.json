@@ -11,7 +11,7 @@
     },
     "projects": [
         {
-            "title": "CPE106L-ProjectCovidRecon",
+            "title": "Project CovidRecon",
             "description": "A PyQt5 and Tweepy-based desktop application that tracks and visualizes COVID-19 case statuses across the National Capital Region in the Philippines.",
             "tags": ["Python", "Data Science", "PyQt5", "Personal"],
             "category": "Personal",
