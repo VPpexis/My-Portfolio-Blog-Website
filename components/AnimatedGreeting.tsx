@@ -4,9 +4,9 @@ import { useEffect, useState } from "react"
 import { cn } from "@/lib/utils"
 
 const greetings = [
-  { lang: "en", text: "Hi" },
-  { lang: "zh", text: "你好" },
-  { lang: "es", text: "Hola" },
+  { lang: "en", text: "Hi!" },
+  { lang: "zh", text: "你好!" },
+  { lang: "es", text: "Hola!" },
 ]
 
 export function AnimatedGreeting() {
@@ -15,7 +15,7 @@ export function AnimatedGreeting() {
   useEffect(() => {
     const id = setInterval(
       () => setIndex((i) => (i + 1) % greetings.length),
-      2000
+      3500
     )
     return () => clearInterval(id)
   }, [])
@@ -32,7 +32,7 @@ export function AnimatedGreeting() {
           lang={greeting.lang}
           aria-hidden={i !== index}
           className={cn(
-            "col-start-1 row-start-1 transition-all duration-500",
+            "col-start-1 row-start-1 transition-all duration-900",
             i === index
               ? "visible opacity-100 translate-y-0"
               : "invisible opacity-0 translate-y-2"
