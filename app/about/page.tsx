@@ -87,10 +87,9 @@ export default function AboutPage() {
                 precision, and discipline.
               </p>
             </div>
-
             <div className="md:col-span-2 flex justify-center">
-              <div className="rrelative h-64 w-64 sm:h-72 sm:w-72 [clip-path:polygon(50%_0%,_100%_25%,_100%_75%,_50%_100%,_0%_75%,_0%_25%)] bg-black p-[2px]">
-                <div className="relative h-64 w-64 overflow-hidden rounded-xl bg-background sm:h-72 sm:w-72">
+              <div className="relative h-64 w-64 sm:h-72 sm:w-72 [clip-path:polygon(50%_0%,100%_25%,100%_75%,50%_100%,0%_75%,0%_25%)] bg-accent p-[3px] shadow-lg shadow-accent/20">
+                <div className="relative h-full w-full overflow-hidden [clip-path:polygon(50%_0%,100%_25%,100%_75%,50%_100%,0%_75%,0%_25%)]">
                   <Image
                     src="/assets/personal_photo.jpg"
                     alt={`Portrait of ${siteData.profile.name}`}
