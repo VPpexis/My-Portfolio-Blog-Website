@@ -16,6 +16,7 @@ const posts = defineCollection({
       category: s.enum([
         "DevOps",
         "Cloud Architecture",
+        "Cybersecurity",
         "Frontend",
         "Tutorials",
       ]),

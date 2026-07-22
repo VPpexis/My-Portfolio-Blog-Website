@@ -339,6 +339,21 @@ pnpm lint:fix # ESLint with auto-fix
 pnpm exec tsc --noEmit  # TypeScript check
 ```
 
+### Docker Development
+
+Two Dockerfiles are provided:
+
+- **`Dockerfile`** — Production image. Copies all source files and runs `pnpm build` during image build. Uses `pnpm start` to serve the built output.
+- **`Dockerfile.dev`** — Development image. Installs dependencies only; source files are provided at runtime via a bind mount. Uses `pnpm dev` with hot-reload enabled.
+
+Start the dev environment:
+
+```bash
+docker compose up --build
+```
+
+The compose file mounts the project root into the container and forwards port 3000. Two polling env vars (`WATCHPACK_POLLING=true` and `CHOKIDAR_USEPOLLING=true`) enable hot-reload on platforms that lack native filesystem event support (e.g. Windows), while remaining safe on Mac and Linux.
+
 ### Pre-commit
 
 Husky + lint-staged run `eslint --fix` on staged `*.js|jsx|ts|tsx` files.

@@ -70,5 +70,5 @@ Husky + lint-staged run `eslint --fix` on staged JS/TS files at pre-commit.
 ## 🏆 Achievements
 
 - Implemented linting on local machine using ESLint and Husky with a custom configuration to enforce code quality and consistency.
-- Created Dockerfile and docker-compose for local development containerization.
+- Created Dockerfile (production), Dockerfile.dev (development with hot-reload), and docker-compose for cross-platform containerization.
 - Built a cohesive design system and reusable component library for consistent UI across all pages.

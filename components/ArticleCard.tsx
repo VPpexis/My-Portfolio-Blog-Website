@@ -51,7 +51,7 @@ export function ArticleCard({ post }: ArticleCardProps) {
               {post.category}
             </Badge>
           </div>
-          <CardTitle className="text-lg leading-snug group-hover:text-primary transition-colors">
+          <CardTitle className="text-lg leading-snug line-clamp-2 group-hover:text-primary transition-colors">
             {post.title}
           </CardTitle>
         </CardHeader>
