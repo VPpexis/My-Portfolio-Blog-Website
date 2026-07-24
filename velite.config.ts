@@ -19,6 +19,7 @@ const posts = defineCollection({
         "Cybersecurity",
         "Frontend",
         "Tutorials",
+        "AWS"
       ]),
       isDraft: s.boolean().default(false),
       content: s.mdx(),
