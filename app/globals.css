@@ -188,3 +188,7 @@ body {
 .prose code {
   border-radius: var(--radius-md);
 }
+
+.prose img {
+  margin-inline: auto;
+}
