@@ -3,6 +3,8 @@ import { notFound } from "next/navigation"
 import { MDXRemote } from "next-mdx-remote/rsc"
 import Link from "next/link"
 import { ArrowLeft, Calendar, Clock, Pencil } from "lucide-react"
+import remarkGfm from "remark-gfm"
+import rehypeSlug from "rehype-slug"
 import { Badge } from "@/components/ui/badge"
 import { Container } from "@/components/ui/container"
 import { Section } from "@/components/ui/section"
@@ -102,7 +104,15 @@ export default async function ArticlePage({ params }: PageProps) {
 
           <div className="prose prose-zinc dark:prose-invert max-w-none prose-headings:font-semibold prose-a:text-primary prose-pre:bg-zinc-900 prose-pre:border prose-pre:border-zinc-800 prose-code:text-primary prose-code:bg-muted prose-code:rounded prose-code:px-1 prose-code:py-0.5 prose-code:before:content-none prose-code:after:content-none">
             {"rawContent" in post && typeof post.rawContent === "string" ? (
-              <MDXRemote source={post.rawContent as string} />
+              <MDXRemote
+                source={post.rawContent as string}
+                options={{
+                  mdxOptions: {
+                    remarkPlugins: [remarkGfm],
+                    rehypePlugins: [rehypeSlug],
+                  },
+                }}
+              />
             ) : (
               <p className="text-muted-foreground italic">Content unavailable.</p>
             )}
