@@ -1,0 +1,517 @@
+---
+title: "AWS S3 HomeLab Part 3: Versioning & Lifecycle Policies"
+slug: aws-s3-homelab-part-3
+description: "Versioning, and Lifecycle Policies in S3"
+date: 2026-07-26
+tags: ["AWS", "S3", "HomeLab"]
+category: "AWS"
+isDraft: false
+---
+
+# Lesson 3: Versioning & Lifecycle Policies
+
+## Why Versioning Matters for Backup
+
+Imagine your backup script runs every night and uploads a file called `db-backup.sql`. One night, the database is corrupted before the backup runs. Your script uploads the corrupted files, overwriting the good one. Without versioning, you’d never know — and you’d have no way to recover.
+
+**Versioning preserve every write.** When enabled, S3 keeps a unique version of an object every time it’s created or overwritten. Instead of destroying the old copy, S3 adds a new version and keeps the previous one intact. You can retrieve any version at any time by specifying its version ID.
+
+> **Key property:** Versioning is a bucket-level setting. Once enabled on a bucket, it **cannot be fully disabled** — you can only suspend it. Newer overwrites in a suspended bucket create a single “null” version without a version ID, but old versions are never purged by suspension alone.
+> 
+
+## How Versions Work
+
+Every object in a versioned bucket carries a **version ID** — a unique string assigned by S3. If you upload `backup/data.zip` twice, the bucket contains:
+
+```json
+Key: backup/data.zip → VersionId: "abc123..." (latest — the second upload)
+Key: backup/data.zip → VersionId: "xyz789..." (previous — the first upload)
+```
+
+When you `GetObject` without specifying a version ID, S3 returns the latest (current) version. Previous versions are invisible unless you explicitly ask for them or list all versions.
+
+### Delete Markers
+
+Deleting an object in a versioned bucket does *not* actually delete data. S3 inserts a **delete marker** — a special version that masks all previous versions:
+
+```json
+Key: backup/data.zip → VersionId: null     (delete marker — "this is deleted")
+Key: backup/data.zip → VersionId: "abc123..." (actual data, now hidden)
+Key: backup/data.zip → VersionId: "xyz789..." (actual data, still there)
+```
+
+A `GetObject` without a version ID returns a 404 if the latest version is a delete marker. But the data is still there — delete the delete marker, and the object reappears.
+
+| **Action** | **What happens in a versioned bucket** |
+| --- | --- |
+| PUT (new key) | Creates object with a version ID |
+| PUT (existing key) | Creates a new version; old version preserved |
+| DELETE (no version ID) | Adds a delete marker; data preserved |
+| DELETE (with version ID) | **Permanently deletes that version — irreversible** |
+
+> **Permanently delete is permanent.** Deleting with a version ID is the only way to truly remove data in a versioned bucket. There is no undo. This is by design — versioning’s job is to prevent accidental data loss, including accidental deletes.
+> 
+
+## Cost Reality Check
+
+Versioning is not free. Every version occupies storage space and you pay for it. If you overwrite a 1GB backup every night for a month, you’re storing 30 versions = 30 GB (not 1 GB). Your S3 bill reflects total storage across all versions.
+
+This is where **lifecycle policies** come in. They let you automate the cleanup and tiering of old versions so you get the protection of versioning without unbounded cost growth.
+
+## Lifecycle Policies
+
+A lifecycle policy is a set of rules attached to a bucket. Each rule defines what to do with objects that match a given prefix and/or set of tags, after a certain number of days.
+
+### Two types of actions
+
+**TRANSITION ACTIONS**
+
+Move objects to a cheaper storage class. The data stays accessible, but storage cost drops dramatically. Think: last month’s backup don’t need S3 Standard; they can live in Glacier.
+
+**EXPIRATION ACTIONS**
+
+Permanently delete objects (or old versions) after a set time. Think: keep daily backups for 30 days, then delete them; keep monthly backups for 1 year.
+
+### Current vs. noncurrent versions
+
+| **Target** | **What it means** | **Example rule** |
+| --- | --- | --- |
+| Current version transitions | The latest (active) version of an object | Move to Standard-IA after 30 days. |
+| Noncurrent version transitions | All previous (overwritten) versions | Move to Glacier Deep Archive after 7 days. |
+| Noncurrent version expirations | Permanently delete old versions after *N* days | Delete noncurrent version after 90 days |
+| Expired delete marker removal | Remove delete markers if no real versions remain | Clean up orphaned markers |
+| Incomplete multipart upload cleanup | Delete parts from abandoned multipart uploads | Abort after 7 days |
+
+### Typical backup lifecycle (real-world pattern)
+
+```json
+Day 0:     backup/db-2026-07-25.sql → S3 Standard (current version)
+Day 1-7:   stored as current version
+Day 7:     backup/db-2026-07-25.sql overwritten → becomes noncurrent version
+Day 30:    transition noncurrent to Standard-IA
+Day 90:    transition noncurrent to Glacier Deep Archive
+Day 365:   expire (delete) noncurrent version
+```
+
+This pattern keeps recent backups instantly accessible, archives older ones cheaply, and eventually deletes them. You get versioning protection with managed costs.
+
+### Minimum storage duration by class
+
+| **Transition to** | **Minimum days in previous class** |
+| --- | --- |
+| S3 Standard-IA / One Zone-IA | 30 days |
+| S3 Glacier Instant Retrieval | 90 days (from Standard-IA or Standard) |
+| S3 Glacier Flexible Retrieval | 90 days |
+| S3 Glacier Deep Archive | 180 days |
+
+If you transition an object too early, AWS charges you the full minimum-storage period for the class you’re leaving. Lifecycle rules should respect these minimums.
+
+## Lab: Versioning, Versions, and Lifecycle
+
+Use the same bucket from previous lessons (or create a new one). 
+
+### 1. Create bucket
+
+```json
+aws s3api create-bucket \
+	--bucket learn-devops--vanpanugan-003 \
+	--create-bucket-configuration LocationConstraint=api-southeast-1
+```
+
+![image.png](/assets/blog_assets/blog_5/image.png)
+
+### 2. Enable versioning on your bucket
+
+```json
+aws s3api put-bucket-versioning
+	--bucket learn-devops-vanpanugan-0003
+	--versioning-configuration Status=enabled
+
+aws s3api get-bucket-versioning --bucket learn-devops-vanpanugan-0003
+```
+
+![image.png](/assets/blog_assets/blog_5/image%201.png)
+
+Let’s dissect the command:
+
+- **`--versioning-configuration Status=Enabled`**: The payload of the command. It passes a shorthand data structure telling AWS what state to apply. *(Note: AWS API values are technically case-sensitive—it is best practice to capitalize **`Enabled`** rather than lowercase `enabled` to prevent validation errors).*
+- **`get-bucket-versioning`**: Sends an HTTP `GET` request to retrieve the bucket's current versioning status.
+
+### 3. Create version 1 of a test file
+
+```json
+@'
+Version 1: initial backup
+Created: July 25, 2026
+'@ | Out-File -Encoding UTF8 backup-v1.txt
+
+aws s3 cp backup-v1.txt s3://learn-devops-YOURNAME-0001/backup/note.txt
+```
+
+![image.png](/assets/blog_assets/blog_5/image%202.png)
+
+### 4. Create version 2 (overwrite the same key)
+
+```json
+@'
+Version 2: updated backup with new schema
+Created: July 26, 2026
+Schema version: v2.0
+'@ | Out-File -Encoding UTF8 backup-v2.txt
+
+aws s3 cp backup-v2.txt s3://learn-devops-YOURNAME-0001/backup/note.txt
+
+```
+
+### 5. List all versions — see both
+
+```json
+aws s3api list-object-versions \
+  --bucket learn-devops-YOURNAME-0001 \
+  --prefix backup/note.txt
+```
+
+You should see **two versions** with different `VersionId`  values. The one with `"IsLatest": true` is the current version (v2). The other is v1 — still stored, still retrievable, still billable.
+
+Here is the output that we have.
+
+```json
+PS C:\Projects\learn-devops> aws s3api list-object-versions --bucket learn-devops-vanpanugan-0003 --prefix backup/note.txt
+{
+    "Versions": [
+        {
+            "ETag": "\"a50302df1aafd5bf6e5006781fca666b\"",
+            "ChecksumAlgorithm": [
+                "CRC64NVME"
+            ],
+            "ChecksumType": "FULL_OBJECT",
+            "Size": 87,
+            "StorageClass": "STANDARD",
+            "Key": "backup/note.txt",
+            "VersionId": "9MeSodYKiPg9_DHBpEDDcllcZQ_.HcjS",
+            "IsLatest": true,
+            "LastModified": "2026-07-26T05:49:52+00:00",
+            "Owner": {
+                "ID": "a4927f6cdd8425fd19e2bc1f8620e302516c8c13159af708e3d18a841ef4944b"
+            }
+        },
+        {
+            "ETag": "\"8e578c8e226ed4e9b1027c14cc8c1af9\"",
+            "ChecksumAlgorithm": [
+                "CRC64NVME"
+            ],
+            "ChecksumType": "FULL_OBJECT",
+            "Size": 49,
+            "StorageClass": "STANDARD",
+            "Key": "backup/note.txt",
+            "VersionId": "Ebw4Pdg.9udZNceSGtZlYe1ilXrrIqvQ",
+            "IsLatest": false,
+            "LastModified": "2026-07-26T05:47:42+00:00",
+            "Owner": {
+                "ID": "a4927f6cdd8425fd19e2bc1f8620e302516c8c13159af708e3d18a841ef4944b"
+            }
+        }
+    ],
+    "RequestCharged": null,
+    "Prefix": "backup/note.txt"
+}
+```
+
+### 6. Retrieve a specific old version
+
+```json
+aws s3api get-object \
+  --bucket learn-devops-YOURNAME-0003 \
+  --key backup/note.txt \
+  --version-id "PASTE_V1_VERSION_ID_HERE" \
+  restored-v1.txt
+```
+
+Replace `PASTE_V1_VERSION_ID_HERE` with the version ID from step 4. You just time-traveled — this is the core superpower of versioning for backup.
+
+Here is the output:
+
+```json
+PS C:\Projects\learn-devops> aws s3api get-object --bucket learn-devops-vanpanugan-0003 --key backup/note.txt --version-id "Ebw4Pdg.9udZNceSGtZlYe1ilXrrIqvQ" restored-v1.txt
+{
+    "AcceptRanges": "bytes",
+    "LastModified": "2026-07-26T05:47:42+00:00",
+    "ContentLength": 49,
+    "ETag": "\"8e578c8e226ed4e9b1027c14cc8c1af9\"",
+    "ChecksumCRC64NVME": "w+H2hrRkEiU=",
+    "ChecksumType": "FULL_OBJECT",
+    "VersionId": "Ebw4Pdg.9udZNceSGtZlYe1ilXrrIqvQ",
+    "ContentType": "text/plain",
+    "ServerSideEncryption": "AES256",
+    "Metadata": {}
+}
+
+```
+
+### 7. Delete the object (creates a delete marker)
+
+```json
+aws s3 rm s3://learn-devops-YOURNAME-0003/backup/note.txt
+
+aws s3api list-object-versions \
+  --bucket learn-devops-YOURNAME-0001 \
+  --prefix backup/note.txt
+```
+
+You’ll see **three entries** now: the delete marker (with `"IsLatest": true` ), plus versions v2 and v1. The data is not gone. A simple `aws s3 ls s3://learn-devops-vanpanugan-0001/backup/`  will show nothing — the delete marker hides everything.
+
+```json
+PS C:\Projects\learn-devops> aws s3api list-object-versions --bucket learn-devops-vanpanugan-0003 --prefix backup/note.txt
+{
+    "Versions": [
+        {
+            "ETag": "\"a50302df1aafd5bf6e5006781fca666b\"",
+            "ChecksumAlgorithm": [
+                "CRC64NVME"
+            ],
+            "ChecksumType": "FULL_OBJECT",
+            "Size": 87,
+            "StorageClass": "STANDARD",
+            "Key": "backup/note.txt",
+            "VersionId": "9MeSodYKiPg9_DHBpEDDcllcZQ_.HcjS",
+            "IsLatest": false,
+            "LastModified": "2026-07-26T05:49:52+00:00",
+            "Owner": {
+                "ID": "a4927f6cdd8425fd19e2bc1f8620e302516c8c13159af708e3d18a841ef4944b"
+            }
+        },
+        {
+            "ETag": "\"8e578c8e226ed4e9b1027c14cc8c1af9\"",
+            "ChecksumAlgorithm": [
+                "CRC64NVME"
+            ],
+            "ChecksumType": "FULL_OBJECT",
+            "Size": 49,
+            "StorageClass": "STANDARD",
+            "Key": "backup/note.txt",
+            "VersionId": "Ebw4Pdg.9udZNceSGtZlYe1ilXrrIqvQ",
+            "IsLatest": false,
+            "LastModified": "2026-07-26T05:47:42+00:00",
+            "Owner": {
+                "ID": "a4927f6cdd8425fd19e2bc1f8620e302516c8c13159af708e3d18a841ef4944b"
+            }
+        }
+    ],
+    "DeleteMarkers": [
+        {
+            "Owner": {
+                "ID": "a4927f6cdd8425fd19e2bc1f8620e302516c8c13159af708e3d18a841ef4944b"
+            },
+            "Key": "backup/note.txt",
+            "VersionId": "Roxud62qJeh59dTwbkKtjWZ3nkf6RbkQ",
+            "IsLatest": true,
+            "LastModified": "2026-07-26T06:15:13+00:00"
+        }
+    ],
+    "RequestCharged": null,
+    "Prefix": "backup/note.txt"
+}
+```
+
+### 8. Restore the object by removing the delete marker
+
+```json
+aws s3api delete-object \
+  --bucket learn-devops-YOURNAME-0003 \
+  --key backup/note.txt \
+  --version-id "PASTE_DELETE_MARKER_VERSION_ID_HERE"
+```
+
+Now the latest version in v2 again. Run `aws s3 ls`  — the object is back. This is how  you recover from accidental deletes in a versioned bucket.
+
+Output is shown here:
+
+```json
+PS C:\Projects\learn-devops> aws s3api delete-object --bucket learn-devops-vanpanugan-0003 --key backup/note.txt --version-id "Roxud62qJeh59dTwbkKtjWZ3nkf6RbkQ"
+{
+    "DeleteMarker": true,
+    "VersionId": "Roxud62qJeh59dTwbkKtjWZ3nkf6RbkQ"
+}
+PS C:\Projects\learn-devops> aws s3 ls s3://learn-devops-vanpanugan-0003 --recursive
+2026-07-26 13:49:52         87 backup/note.txt
+```
+
+### 9. Permanently delete a specific version
+
+```json
+aws s3api delete-object \
+  --bucket learn-devops-YOURNAME-0003 \
+  --key backup/note.txt \
+  --version-id "PASTE_V1_VERSION_ID_HERE"
+```
+
+v1 is now gone forever. Only v2 remains. Use this with caution.
+
+```json
+PS C:\Projects\learn-devops> aws s3api delete-object --bucket learn-devops-vanpanugan-0003 --key backup/note.txt --version-id "Ebw4Pdg.9udZNceSGtZlYe1ilXrrIqvQ"
+{
+    "VersionId": "Ebw4Pdg.9udZNceSGtZlYe1ilXrrIqvQ"
+}
+
+PS C:\Projects\learn-devops> aws s3api list-object-versions --bucket learn-devops-vanpanugan-0003 --prefix backup/note.txt
+{
+    "Versions": [
+        {
+            "ETag": "\"a50302df1aafd5bf6e5006781fca666b\"",
+            "ChecksumAlgorithm": [
+                "CRC64NVME"
+            ],
+            "ChecksumType": "FULL_OBJECT",
+            "Size": 87,
+            "StorageClass": "STANDARD",
+            "Key": "backup/note.txt",
+            "VersionId": "9MeSodYKiPg9_DHBpEDDcllcZQ_.HcjS",
+            "IsLatest": true,
+            "LastModified": "2026-07-26T05:49:52+00:00",
+            "Owner": {
+                "ID": "a4927f6cdd8425fd19e2bc1f8620e302516c8c13159af708e3d18a841ef4944b"
+            }
+        }
+    ],
+    "RequestCharged": null,
+    "Prefix": "backup/note.txt"
+```
+
+### 10. Create and apply a lifecycle policy
+
+Create a `lifecycle-policy.json`
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "MoveOldBackupsToCheapStorage",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "backup/" },
+      "NoncurrentVersionTransitions": [
+        {
+          "NoncurrentDays": 30,
+          "StorageClass": "STANDARD_IA"
+        },
+        {
+          "NoncurrentDays": 90,
+          "StorageClass": "DEEP_ARCHIVE"
+        }
+      ],
+      "NoncurrentVersionExpiration": {
+        "NoncurrentDays": 365
+      }
+    }
+  ]
+}
+```
+
+Then run this command:
+
+```json
+aws s3api put-bucket-lifecycle-configuration \
+  --bucket learn-devops-YOURNAME-0003 \
+  --lifecycle-configuration file://lifecycle-policy.json
+```
+
+Here is the output:
+
+```json
+PS C:\Projects\learn-devops> aws s3api put-bucket-lifecycle-configuration --bucket learn-devops-vanpanugan-0003 --lifecycle-configuration file://lifecycle-policy.json
+{
+    "TransitionDefaultMinimumObjectSize": "all_storage_classes_128K"
+}
+```
+
+This rule targets everything under the `backup/` prefix. Noncurrent versions move to Standard-IA after 30 days, to Glacier Deep Archive after 90 days, and get permanently deleted after 365 days. Current versions are untouched — they stay in S3 standard.
+
+### 11. Verify the lifecycle configuration
+
+```json
+aws s3api get-bucket-lifecycle-configuration --bucket learn-devops-YOURNAME-0003
+```
+
+Here is the output:
+
+```json
+PS C:\Projects\learn-devops> aws s3api get-bucket-lifecycle-configuration --bucket learn-devops-vanpanugan-0003
+{
+    "TransitionDefaultMinimumObjectSize": "all_storage_classes_128K",
+    "Rules": [
+        {
+            "ID": "MoveOldBackupsToCheapStorage",
+            "Filter": {
+                "Prefix": "backup/"
+            },
+            "Status": "Enabled",
+            "NoncurrentVersionTransitions": [
+                {
+                    "NoncurrentDays": 30,
+                    "StorageClass": "STANDARD_IA"
+                },
+                {
+                    "NoncurrentDays": 90,
+                    "StorageClass": "DEEP_ARCHIVE"
+                }
+            ],
+            "NoncurrentVersionExpiration": {
+                "NoncurrentDays": 365
+            }
+        }
+    ]
+}
+```
+
+You should see your rule echoed back. Lifecycle rules are evaluated once per day — changes aren’t instantaneous.
+
+### 12 Clean-up
+
+Let’s remove the bucket and it’s content using this command.
+
+```powershell
+$bucket = "learn-devops-vanpanugan-0003"
+
+# 1. Get all hidden versions and delete markers from S3
+$history = aws s3api list-object-versions --bucket $bucket | ConvertFrom-Json
+
+# 2. Permanently delete all historical file versions
+if ($history.Versions) {
+    $history.Versions | ForEach-Object {
+        Write-Host "Deleting version: $($_.Key) ID: $($_.VersionId)"
+        aws s3api delete-object --bucket $bucket --key $_.Key --version-id $_.VersionId
+    }
+}
+
+# 3. Permanently delete all Delete Markers
+if ($history.DeleteMarkers) {
+    $history.DeleteMarkers | ForEach-Object {
+        Write-Host "Deleting marker: $($_.Key) ID: $($_.VersionId)"
+        aws s3api delete-object --bucket $bucket --key $_.Key --version-id $_.VersionId
+    }
+}
+
+# 4. Remove the now-empty bucket
+aws s3 rb s3://$bucket
+```
+
+Because the bucket still holds that hidden version history and the new delete marker, S3 locked the doors and threw the `BucketNotEmpty` error.
+
+To fix this from PowerShell, you need to explicitly query the bucket's version history and destroy every individual Version ID and Delete Marker by name before removing the bucket.
+
+By using `ConvertFrom-Json`, PowerShell transforms the raw JSON output of `list-object-versions` into an object you can loop through. By passing the exact **`--version-id`** to the `delete-object` API, you bypass S3's normal deletion safety net and instruct AWS to permanently purge the underlying data from the physical disks.
+
+Once the loop finishes, your bucket is truly empty, and the final `aws s3 rb` command will succeed.
+
+---
+
+> **Mission connection:** Steps 2-9 are exactly the versioning workflow for your backup project. Step 10 is the cost-control mechanism — without it, your backup bucket grows forever. Together they give you protection (versioning) + affordability (lifecycle).
+> 
+
+## Primary Sources
+
+- [S3 User Guide — Using versioning in S3 buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/Versioning.html)
+- [S3 User Guide — Managing your storage lifecycle](https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lifecycle-mgmt.html)
+- [S3 User Guide — Lifecycle transition considerations](https://docs.aws.amazon.com/AmazonS3/latest/userguide/lifecycle-transition-general-considerations.html) (minimum storage durations, billing implications)
+
+---
+In the next lesson, we will learn about encryption!
