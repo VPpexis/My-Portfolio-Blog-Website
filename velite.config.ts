@@ -35,8 +35,33 @@ const posts = defineCollection({
     }),
 })
 
+const devlogs = defineCollection({
+  name: "Devlog",
+  pattern: "devlogs/**/*.mdx",
+  schema: s
+    .object({
+      title: s.string().max(100),
+      slug: s.slug("devlogs"),
+      description: s.string(),
+      date: s.isodate(),
+      updatedAt: s.isodate().optional(),
+      tags: s.array(s.string()),
+      isDraft: s.boolean().default(false),
+      content: s.mdx(),
+    })
+    .transform((data) => {
+      const rawContent = context().file.data.content as string
+      const wordCount = rawContent.trim().split(/\s+/).length
+      return {
+        ...data,
+        rawContent,
+        readingTime: Math.max(1, Math.ceil(wordCount / 200)),
+      }
+    }),
+})
+
 export default defineConfig({
-  collections: { posts },
+  collections: { posts, devlogs },
   mdx: {
     remarkPlugins: [remarkGfm],
     rehypePlugins: [rehypeSlug],

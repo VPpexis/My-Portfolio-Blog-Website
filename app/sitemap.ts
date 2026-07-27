@@ -1,21 +1,26 @@
 import type { MetadataRoute } from "next"
-import { posts } from "#site/content"
+import { posts, devlogs } from "#site/content"
 import { siteConfig } from "@/lib/metadata"
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  const published =
+  const publishedPosts =
     process.env.NODE_ENV === "production"
       ? posts.filter((p) => !p.isDraft)
       : posts
 
-  const routes = ["", "/about", "/contact", "/projects", "/blog"].map((path) => ({
+  const publishedDevlogs =
+    process.env.NODE_ENV === "production"
+      ? devlogs.filter((d) => !d.isDraft)
+      : devlogs
+
+  const routes = ["", "/about", "/contact", "/projects", "/blog", "/devlog"].map((path) => ({
     url: `${siteConfig.url}${path}`,
     lastModified: new Date().toISOString(),
     changeFrequency: "weekly" as const,
     priority: path === "" ? 1 : 0.8,
   }))
 
-  const blogPosts = published.map((post) => ({
+  const blogPosts = publishedPosts.map((post) => ({
     url: `${siteConfig.url}/blog/${post.slug}`,
     lastModified: post.updatedAt ?? post.date,
     changeFrequency: "monthly" as const,
@@ -23,7 +28,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
   }))
 
   const tagSet = new Set<string>()
-  published.forEach((p) => p.tags.forEach((t) => tagSet.add(t)))
+  publishedPosts.forEach((p) => p.tags.forEach((t) => tagSet.add(t)))
   const tags = Array.from(tagSet).map((tag) => ({
     url: `${siteConfig.url}/blog/tags/${tag}`,
     lastModified: new Date().toISOString(),
@@ -31,5 +36,12 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: 0.4,
   }))
 
-  return [...routes, ...blogPosts, ...tags]
+  const devlogEntries = publishedDevlogs.map((entry) => ({
+    url: `${siteConfig.url}/devlog/${entry.slug}`,
+    lastModified: entry.updatedAt ?? entry.date,
+    changeFrequency: "monthly" as const,
+    priority: 0.5,
+  }))
+
+  return [...routes, ...blogPosts, ...tags, ...devlogEntries]
 }
