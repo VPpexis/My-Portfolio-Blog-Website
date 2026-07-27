@@ -1,0 +1,430 @@
+---
+title: "AWS S3 HomeLab Part 4: Server-Side Encryption"
+slug: aws-s3-homelab-part-4
+description: "Your backup data is encrypted at rest. How do you know?"
+date: 2026-07-27
+tags: ["AWS", "S3", "HomeLab"]
+category: "AWS"
+isDraft: false
+---
+
+# Lesson 0004: Server-Side Encryption
+
+## Encryption at Rest vs In Transit
+
+| **At rest** | **In transit** |  |
+| --- | --- | --- |
+| **What's protected?** | Data stored on disk in AWS data centers | Data traveling between your client and S3 |
+| **Threat model** | Someone physically steals a hard drive; data center breach | Man-in-the-middle intercepts your upload |
+| **S3 mechanism** | Server-Side Encryption (SSE) | HTTPS (TLS) |
+| **Enforced by** | Default encryption setting or bucket policy | Bucket policy with `aws:SecureTransport` |
+| **Is it on by default?** | Yes — since January 2023, new objects are automatically encrypted with SSE-S3 | No — S3 accepts HTTP unless you block it |
+
+This lesson focuses on **encryption at rest** — what happens to your data after it reaches S3. You already saw encryption in transit in Lesson 0002 (the `aws:SecureTransport` condition key). We'll combine both at the end.
+
+## The SSE Option
+
+S3 offers four server-side encryption options. They all work the same way from your perspective: you upload data, S3 encrypts it before writing to disk, and decrypts it when you download. The difference is **who manages the key**.
+
+S3 offers four server-side encryption options. They all work the same way from your perspective: you upload data, S3 encrypts it before writing to disk, and decrypts it when you download. The difference is **who manages the key**.
+
+| **Option** | **Key managed by** | **Cost** | **Audit trail** | **Use when** |
+| --- | --- | --- | --- | --- |
+| **SSE-S3** | AWS (fully managed) | Free | None | Default choice. Simplest. No reason not to use it. |
+| **SSE-KMS** | AWS KMS (you control key policy) | ~$1/month per key + per-request charges | CloudTrail logs every encrypt/decrypt | Compliance requirements; need to control key rotation; need to separate encrypt and decrypt permissions |
+| **SSE-C** | You (provide key with each request) | Free | None (AWS never stores your key) | Regulatory requirement that you hold the keys. Rare — most workloads use KMS. |
+| **DSSE-KMS** | AWS KMS (dual-layer) | Higher than SSE-KMS | CloudTrail | Highest-security workloads. Applies two independent encryption layers. |
+
+> **SSE-S3 vs. SSE-KMS is the decision that matters for most real workloads.** SSE-S3 is free and invisible. SSE-KMS gives you control, audit, and the ability to revoke access by disabling the key. For a backup bucket, SSE-KMS means you can prove every backup was encrypted with a specific key, and you can cryptographically shred all backups by deleting the key.
+> 
+
+## Default Encryption
+
+Since January 5, 2023, **all new objects uploaded to S3 are automatically encrypted with SSE-S3** — even if you don't specify anything. This is a bucket-level setting called *default encryption*. Every new bucket has it enabled out of the box.
+
+You can change the default encryption mode (e.g., to SSE-KMS) or disable it entirely, though there's rarely a reason to disable it.
+
+When default encryption is SSE-S3, you can still upload individual objects with a different encryption mode (SSE-KMS, SSE-C) by passing the appropriate headers. Default encryption is a fallback, not a constraint.
+
+## Enforcing S3 Server-Side Encryption with Bucket Policies
+
+Amazon S3 applies **default server-side encryption (SSE-S3 / `AES256`)** to all new objects at no additional cost. Even if an upload request omits encryption headers entirely, S3 automatically encrypts the file before saving it to disk.
+
+However, default encryption only guarantees that *some* basic encryption is applied. It does not enforce specific organizational requirements—such as mandating customer-managed keys (SSE-KMS) or enforcing compliance standards. To mandate specific encryption controls, you can use an S3 bucket policy.
+
+### 1. Mandating Standard Encryption (`SSE-S3`)
+
+If you want to explicitly require clients to pass the `AES256` header upon upload, you can use a policy with the `StringNotEquals` condition operator:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyNonAES256Uploads",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::bucket-name/*",
+      "Condition": {
+        "StringNotEquals": {
+          "s3:x-amz-server-side-encryption": "AES256"
+        }
+      }
+    }
+  ]
+}
+```
+
+> **Important:** Using `StringNotEquals` requires the request to explicitly include the `x-amz-server-side-encryption: AES256` header. If a client relies on default bucket encryption and omits the header, **this policy will block the upload**, even though S3 would have encrypted it anyway.
+> 
+
+### 2. Choosing the Right Condition Operator
+
+The distinction between `StringNotEquals` and `StringNotEqualsIfExists` dictates how your policy treats headerless uploads:
+
+- **`StringNotEquals` (Strict Enforcement):** Denies the request if the encryption header is **absent** OR if its value does not match. Use this only when you want to force uploading applications to explicitly send encryption headers.
+- **`StringNotEqualsIfExists` (Flexible / Preferred for Defaults):** Denies the request **only if** the encryption header is present and contains an unwanted value. If the header is missing, S3 allows the upload and applies the bucket's default encryption configuration.
+
+### 3. Enforcing KMS Key Encryption (`SSE-KMS`)
+
+When you require advanced key auditing, rotation, or separate access controls, you can enforce AWS Key Management Service (SSE-KMS) by checking for `"aws:kms"`:
+
+```json
+{
+  "Sid": "RequireKMSEncryption",
+  "Effect": "Deny",
+  "Principal": "*",
+  "Action": "s3:PutObject",
+  "Resource": "arn:aws:s3:::bucket-name/*",
+  "Condition": {
+    "StringNotEquals": {
+      "s3:x-amz-server-side-encryption": "aws:kms"
+    }
+  }
+}
+```
+
+#### Common Gotcha: KMS Permissions
+
+Enforcing `SSE-KMS` adds an extra permission dependency. For an upload to succeed:
+
+1. The user needs `s3:PutObject` permission in IAM.
+2. The user **must also have `kms:GenerateDataKey` permission** on the target KMS key.
+
+If the uploader lacks KMS key access, the upload will fail with an `AccessDenied` error—even if their S3 permissions are completely correct.
+
+### 4. Best Practice: Refine Your Security Controls
+
+- **Avoid `"Principal": "*"` in broad policy statements:** Applying an unconditional `Deny` with `"Principal": "*"` can accidentally lock out administrative roles or automated service accounts. Always narrow scope using conditions or explicit IAM roles.
+- **Enforce Encryption in Transit:** Encryption at rest only protects data on disk. Always include a condition to enforce HTTPS (`"aws:SecureTransport": "true"`) to prevent data sniffing over the network.
+
+## Checking Encryption on an Object
+
+Use `head-object` to inspect an object's encryption status without downloading it:
+
+```
+aws s3api head-object --bucket bucket-name --key path/to/object
+```
+
+Look for these fields in the response:
+
+- `"ServerSideEncryption": "AES256"` → SSE-S3
+- `"ServerSideEncryption": "aws:kms"` + `"SSEKMSKeyId"` → SSE-KMS
+- `"ServerSideEncryption": "aws:kms:dsse"` → DSSE-KMS
+- Absent → encrypted with SSE-C (AWS doesn't report it) or unencrypted
+
+## Lab: Encrypt By Default, Enforce by Policy
+
+### 1. Create a new bucket
+
+```json
+aws s3api create-bucket \
+  --bucket learn-devops-encrypt-YOURNAME-0004 \
+  --region ap-southeast-1 \
+  --create-bucket-configuration LocationConstraint=ap-southeast-1
+
+aws s3api put-public-access-block \
+  --bucket learn-devops-encrypt-YOURNAME-0004 \
+  --public-access-block-configuration \
+  BlockPublicAcls=true,\
+IgnorePublicAcls=true,\
+BlockPublicPolicy=true,\
+RestrictPublicBuckets=true
+```
+
+This bucket is private and locked down by default — the right foundation for a backup bucket.
+
+### 2. Check default encryption (should already be SSE-S3)
+
+```json
+aws s3api get-bucket-encryption --bucket learn-devops-encrypt-YOURNAME-0004
+```
+
+By running the command above, we got this output:
+
+```json
+{
+    "ServerSideEncryptionConfiguration": {
+        "Rules": [
+            {
+                "ApplyServerSideEncryptionByDefault": {
+                    "SSEAlgorithm": "AES256"
+                },
+                "BucketKeyEnabled": false,
+                "BlockedEncryptionTypes": {
+                    "EncryptionType": [
+                        "SSE-C"
+                    ]
+                }
+            }
+        ]
+    }
+}
+```
+
+Since 2023, new buckets automatically have SSE-S3 as the default. You should see `"SSEAlgorithm": "AES256"`. If you get a `ServerSideEncryptionConfigurationNotFoundError`, default encryption isn't set — we'll set it in the next step.
+
+### 3. Upload a file (default encryption handles it)
+
+Create a new file called `backup-secrets.txt`
+
+```json
+Sensitive backup data:
+  - API keys: redacted
+  - Database credentials: redacted
+  - User PII: redacted
+```
+
+Then run the command:
+
+```json
+aws s3 cp backup-secrets.txt s3://learn-devops-encrypt-YOURNAME-0004/
+```
+
+### 4. Verify the object is encrypted
+
+```json
+aws s3api head-object \
+  --bucket learn-devops-encrypt-YOURNAME-0004 \
+  --key backup-secrets.txt
+```
+
+By running the command, we got this output:
+
+```json
+{
+    "AcceptRanges": "bytes",
+    "LastModified": "2026-07-27T03:45:11+00:00",
+    "ContentLength": 106,
+    "ETag": "\"6d498979eadddfec14543cc6dc7f5912\"",
+    "ContentType": "text/plain",
+    "ServerSideEncryption": "AES256",
+    "Metadata": {}
+}
+```
+
+Look for `"ServerSideEncryption": "AES256"` in the output. This confirms SSE-S3 is active — even though you didn't specify encryption in the upload command.
+
+### 5. Upload an object with explicit SSE-KMS
+
+Switch to KMS for an object that needs audit trail. Use the AWS-managed S3 key (`aws/s3`) — it already exists in every account.
+
+```json
+aws s3 cp backup-secrets.txt s3://learn-devops-encrypt-YOURNAME-0004/backup-secrets-kms.txt --sse aws:kms --sse-kms-key-id alias/aws/s3
+```
+
+Run `head-object` again on `backup-secrets-kms.txt`. You should see `"ServerSideEncryption": "aws:kms"` and a `"SSEKMSKeyId"` field.
+
+```json
+{
+    "AcceptRanges": "bytes",
+    "LastModified": "2026-07-27T03:46:52+00:00",
+    "ContentLength": 106,
+    "ETag": "\"fc6515a1aa0661d146f7a730f797fb9b\"",
+    "ContentType": "text/plain",
+    "ServerSideEncryption": "aws:kms",
+    "Metadata": {},
+    "SSEKMSKeyId": "arn:aws:kms:ap-southeast-1:934781888456:key/b46840ca-b6d1-4801-af5a-46763a808d9d"
+}
+```
+
+### 6. Enforce encryption with bucket policy
+
+Now we lock the door. This policy denies any PutObject that doesn't specify SSE-S3 **or** SSE-KMS encryption, **and** requires HTTPS. It's a two-in-one enforcement.
+
+Create a file called `encryptioon-policy.json`
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyUnencryptedUploads",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::learn-devops-encrypt-YOURNAME-0004/*",
+      "Condition": {
+        "StringNotEqualsIfExists": {
+          "s3:x-amz-server-side-encryption": ["AES256", "aws:kms"]
+        }
+      }
+    },
+    {
+      "Sid": "DenyInsecureTransport",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:*",
+      "Resource": "arn:aws:s3:::learn-devops-encrypt-YOURNAME-0004/*",
+      "Condition": {
+        "Bool": {
+          "aws:SecureTransport": "false"
+        }
+      }
+    }
+  ]
+}
+```
+
+Then run this command:
+
+```json
+aws s3api put-bucket-policy \
+  --bucket learn-devops-encrypt-YOURNAME-0004 \
+  --policy file://encryption-policy.json
+```
+
+We can check the policy if it has changed using this command:
+
+```json
+aws s3api get-bucket-policy --bucket learn-devops-encrypt-YOURNAME-0004
+```
+
+We can get an output of:
+
+```json
+{
+    "Policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"DenyUnencryptedUploads\",\"Effect\":\"Deny\",\"Principal\":\"*\",\"Action\":\"s3:PutObject\",\"Resource\":\"arn:aws:s3:::learn-devops-encrypt-vanpanugan-0004/*\",\"Condition\":{\"StringNotEqualsIfExists\":{\"s3:x-amz-server-side-encryption\":[\"AES256\",\"aws:kms\"]}}},{\"Sid\":\"DenyInsecureTransport\",\"Effect\":\"Deny\",\"Principal\":\"*\",\"Action\":\"s3:*\",\"Resource\":\"arn:aws:s3:::learn-devops-encrypt-vanpanugan-0004/*\",\"Condition\":{\"Bool\":{\"aws:SecureTransport\":\"false\"}}}]}"
+}
+```
+
+This means that we were able to change the encryption policy.
+
+### 7. Test: Upload with explicit encryption headers (should succeed)
+
+Create a file called `test-ok.txt`. It should contain:
+
+```json
+another test
+```
+
+Then run this command:
+
+```json
+aws s3 cp test-ok.txt s3://learn-devops-encrypt-YOURNAME-0004/ --sse AES256
+```
+
+This succeeds because the `x-amz-server-side-encryption: AES256` header is present and matches the bucket policy's allowed values.
+
+### 8. Test: Upload without encryption via `s3api put-object`  and `s3 cp`
+
+Create a temporary file called `test-fail.txt`. Containing:
+
+```json
+this should be rejected
+```
+
+Run the `s3api put-object` without encryption:
+
+```json
+aws s3api put-object \
+  --bucket learn-devops-encrypt-YOURNAME-0004 \
+  --key test-fail.txt \
+  --body test-fail.txt
+```
+
+We will get this output.
+
+```json
+aws: [ERROR]: An error occurred (AccessDenied) when calling the PutObject operation: User: arn:aws:iam::934781888456:root is not authorized to perform: s3:PutObject on resource: "arn:aws:s3:::learn-devops-encrypt-vanpanugan-0004/test-fail.txt" with an explicit deny in a resource-based policy
+```
+
+On the other hand, run the `s3 cp` without encrpytion:
+
+```json
+aws s3 cp test-fail.txt s3://learn-devops-encrypt-YOURNAME-0004/test-fail2.txt
+```
+
+We got this output:
+
+```json
+upload failed: .\test-ok.txt to s3://learn-devops-encrypt-vanpanugan-0004/test-ok2.txt An error occurred (AccessDenied) when calling the PutObject operation: User: arn:aws:iam::934781888456:root is not authorized to perform: s3:PutObject on resource: "arn:aws:s3::
+```
+
+You get **AccessDenied**. The policy's Deny statement blocks any PutObject missing the required encryption header. Even though default encryption would have encrypted it, the *policy* demands the header on the request.
+
+### 9. Confirm your policy is working — audit the bucket
+
+By running this command we can get the `head-object`:
+
+```json
+aws s3api head-object --bucket learn-devops-encrypt-YOURNAME-0004 --key test-ok.txt
+```
+
+Which will give us an output:
+
+```json
+{
+    "AcceptRanges": "bytes",
+    "LastModified": "2026-07-27T03:54:31+00:00",
+    "ContentLength": 12,
+    "ETag": "\"5e8862cd73694287ff341e75c95e3c6a\"",
+    "ContentType": "text/plain",
+    "ServerSideEncryption": "AES256",
+    "Metadata": {}
+}
+```
+
+To get the bucket policy we can use `get-bucket-policy`:
+
+```json
+aws s3api get-bucket-policy --bucket learn-devops-encrypt-YOURNAME-0004
+```
+
+Which will show the output:
+
+```json
+{
+    "Policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"DenyUnencryptedUploads\",\"Effect\":\"Deny\",\"Principal\":\"*\",\"Action\":\"s3:PutObject\",\"Resource\":\"arn:aws:s3:::learn-devops-encrypt-vanpanugan-0004/*\",\"Condition\":{\"StringNotEqualsIfExists\":{\"s3:x-amz-server-side-encryption\":[\"AES256\",\"aws:kms\"]}}},{\"Sid\":\"DenyInsecureTransport\",\"Effect\":\"Deny\",\"Principal\":\"*\",\"Action\":\"s3:*\",\"Resource\":\"arn:aws:s3:::learn-devops-encrypt-vanpanugan-0004/*\",\"Condition\":{\"Bool\":{\"aws:SecureTransport\":\"false\"}}}]}"
+}
+```
+
+`test-ok.txt` shows `"ServerSideEncryption": "AES256"`. The bucket policy confirms both Deny rules are in place. Your backup bucket is now cryptographically enforced.
+
+### 10. Clean-up
+
+Let us clean-up our lab, by deleting the bucket:
+
+```json
+aws s3 rb s3://learn-devops-encrypt-YOURNAME-0004 --force
+```
+
+Since the bucket has contents inside, we need to use the `--force` flag with `aws s3 rb`. However, if **Bucket Versioning** is enabled, `--force` will fail because noncurrent object versions and delete markers remain. You must purge all object versions and delete markers—either using `aws s3api` commands, a lifecycle policy, or manually—before S3 allows the bucket to be deleted.
+
+---
+
+> **Mission connection:** Every production backup pipeline needs this. Default encryption gives you a safety net (any upload is encrypted). The bucket policy gives you enforcement (no one can accidentally or maliciously upload unencrypted data). Together, they ensure your backup data is encrypted at rest with zero configuration from the application doing the uploading.
+> 
+
+## KMS Key Permissions — The Hidden Dependency
+
+S3 uses `kms:GenerateDataKey` to create a unique data key for each object (envelope encryption). It uses `kms:Decrypt` when you download. If the uploader's IAM policy doesn't include these, the upload fails — even if S3 access and the bucket policy are correct.
+
+This is the #1 cause of "I have S3 permissions, why does my upload fail?" when SSE-KMS is enforced.
+
+### Primary Sources
+
+- [S3 User Guide — Protecting data using encryption](https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingEncryption.html)
+- [S3 User Guide — Using SSE-KMS](https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingKMSEncryption.html)
+- [S3 User Guide — Default encryption FAQ](https://docs.aws.amazon.com/AmazonS3/latest/userguide/default-encryption-faq.html)
