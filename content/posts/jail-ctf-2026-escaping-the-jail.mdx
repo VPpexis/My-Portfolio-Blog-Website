@@ -1,0 +1,166 @@
+---
+title: "jailCTF 2026: Escaping the Jail, Pythonically"
+slug: jail-ctf-2026-escaping-the-jail
+description: "Escape characters, restricted built-ins, and arbitrary code execution"
+date: 2026-07-28
+tags: ["CTF", "PyJail", "CyberSecurity"]
+category: "Cybersecurity"
+isDraft: false
+---
+
+Escape characters, restricted built-ins, and arbitrary code execution under absurd constraints—welcome to **jailCTF 2026**.
+
+PyJail and sandbox escape challenges have a unique way of making you feel like a genius and an absolute fool in the span of five minutes. What starts as a simple *"how hard can a 20-character limit be?"* quickly turns into hours of digging through Python ASTs, abusing string formatting, and hunting for implicit imports in the deepest corners of standard libraries.
+
+In this post, I’m breaking down my journey through jailCTF 2026: the wall-banging moments, the payloads that finally popped a shell, and the clever bypasses that made the headaches entirely worth it.
+
+Going into **jailCTF 2026**, our team was confident. We set a realistic goal for ourselves: capture at least 5 flags out of 20. But by the time the timer ran out, reality had delivered a massive wake-up call—we walked away with just **2 flags**.
+
+It was a huge eye-opener on what high-level CTFs are actually like, especially when constraints start piling up.
+
+We competed in the **AI Division**, which meant we were fully permitted to leverage AI models to help analyze payloads, inspect sandboxes, and iterate on bypasses. Naturally, I brought in heavy firepower: **DeepSeek R4 Pro**. But even with advanced models on our side, the challenges proved brutally tough. I quickly learned that AI isn't a magic key for sandbox escapes—our model burned through tens of thousands of tokens attempting complex payloads, and with a strict budget constraint on API calls, every failed prompt was a painful burn on resources.
+
+Even though we fell short of our initial goal, those two flags were hard-won and taught us more about sandbox security, prompt engineering, and real-world CTF dynamics than a smooth victory ever could.
+
+Here is the full story of our run in jailCTF 2026: the setup, the token burn, and the two solves that saved our scoreboard.
+
+## Challenge 1: The Quasar Files (PyJail)
+
+The challenge greeted us over netcat (`nc challs.pyjail.club 17761`) with a mysterious banner: `THE ██████ FILES >`.
+
+The source code revealed a brutally restrictive execution environment:
+
+- **Stripped Builtins**: Executed via `exec(f, {'__builtins__': {}}, {'__builtins__': {}})`, leaving zero built-in functions like `print`, `open`, or `eval`.
+- **Input Filter**: A hard assertion blocked four specific characters: `[`, `]`, `"`, and `'`.
+- **Output Filter**: Standard output and error streams were replaced with `FakeStdstream`, which converted all uppercase letters and digits to `█` and lowercase letters to `▆`.
+
+Python
+
+```python
+# The jail execution setup from run
+exec(f, {'__builtins__': {}}, {'__builtins__': {}})
+```
+
+### Navigating Without Brackets or Builtins
+
+Without builtins, the goal was to traverse Python's object hierarchy starting from an empty tuple `()` to regain access to execution modules. Normally, you would use `().__class__.__bases__[0].__subclasses__()`, but square brackets `[` and `]` were explicitly banned.
+
+We bypassed this by using `.__getitem__()` calls instead:
+
+Python
+
+```python
+().__class__.__bases__.__getitem__(0).__subclasses__()
+```
+
+We scanned the available subclasses on the server and identified index **167** (`os._wrap_close`). Because its `__init__` is a regular Python function, accessing its `.__globals__` gave us direct access to the entire `os` module namespace, including `os.system`.
+
+### Building Strings Without Quotes
+
+To invoke `os.system('cat flag.txt')`, we needed string literals, but both single `'` and double `"` quotes were blocked. We had to harvest individual characters from built-in attributes and chain them together using `.__add__()`:
+
+- `'l'` and `'s'` from `().__class__.__name__` (`'tuple'`) and tuple docstrings `().__doc__`
+- `'_'` from `().__reduce__.__name__` (`'__reduce__'`)
+- `'x'` from `1j.__class__.__name__` (`'complex'`)
+
+By concatenating character getter calls, we dynamically constructed `'system'` and `'cat flag.txt'` in memory without typing a single quotation mark.
+
+### Bypassing the Output Filter & The Flag Twist
+
+The ultimate breakthrough came from how `os.system()` interacts with process output. While Python's `sys.stdout` was wrapped in `FakeStdstream` to redact letters and numbers into block characters, `os.system()` spawns a subprocess that writes directly to raw file descriptor 1, bypassing `FakeStdstream` entirely!
+
+When we executed our payload, the server responded:
+
+```
+jail{████_████_██_██████_██_████_███████_██_█████_███_██████}
+```
+
+At first, we thought our output was still being redacted by the server! But after reviewing the flag specification (`jail{[!-z█]+}`), we realized the block character `█` (U+2588) was a valid flag character—the redacted block string **was** the flag.
+
+## Challenge 2: Silent Cat (Node.js / Esoteric Jail)
+
+If PyJail felt like a puzzle, **Silent Cat** felt like a exercise in extreme restriction. This challenge took input, passed it through a strict Python filter in `main.py`, compiled the result using the **Mewlix** esoteric language compiler (a cat-themed language written in Haskell), and ran the output in Node.js.
+
+The input filter line in `main.py` banned almost everything standard:
+
+Python
+
+```
+if any(c in 'mew = "(_^OwO^_).[_^UwU^_]"' for c in inp) or max(inp) > "~meow~":
+    print('cats, unlimited cats, but no cats.')
+    exit(1)
+```
+
+This filter blocked letters `m`, `e`, `w`, `O`, `U`, parentheses `(`, `)`, double quotes `"`, dots `.`, brackets `[`, `]`, equals `=`, underscores `_`, caret `^`, and crucially, **spaces**.
+
+### Leveraging Mewlix Syntax & Tab Characters
+
+Mewlix compiles syntax like `do f<-x` into JS function calls `f(x)`, and uses the pipe operator `|>` to pass left operands as arguments. By carefully structuring a Mewlix statement, we could construct a JS `Function` call dynamically:
+
+Code snippet
+
+```
+'ARG'|>do<TAB>Function<-'YQ'|>atob,'DECODER'|>atob
+```
+
+Since regular spaces (`0x20`) were banned, we substituted them with literal ASCII tab characters (`\t` / `0x09`), which satisfied both the Python filter and the Mewlix compiler.
+
+This compiled into the JavaScript structure:
+
+JavaScript
+
+```
+Function(atob("YQ"), atob("DECODER"))("ARG")
+```
+
+### Double Base64 & Character Substitutions
+
+To execute arbitrary Node.js commands like `cat /flag*`, we needed to pass JavaScript payloads containing banned characters (`m`, `e`, `w`, etc.).
+
+Our AI model kept trying standard Base64 strings, failing to realize that standard Base64 payloads often contain letters like `e` or `m`! Every prompt cycle wasted tokens on rejected inputs.
+
+We solved this by designing a **custom substitution matrix** on top of Base64:
+
+1. We encoded our core JavaScript payload into Base64.
+2. We mapped restricted Base64 characters to allowed symbols:
+    - `m` → `!`
+    - `e` → `#`
+    - `w` → `$`
+    - `O` → `&`
+    - `U` → `;`
+3. Stripped `=` padding.
+4. Built a small JS decoder wrapped inside the `Function` call that reversed these substitutions prior to `eval()`:
+
+JavaScript
+
+```
+eval(atob(a.split('!').join('m').split('#').join('e').split('$').join('w').split('&').join('O').split(';').join('U')))
+```
+
+### Forcing Output Leaks
+
+Because the Mewlix execution engine swallowed normal standard output, running `cp.execSync('cat /flag*')` quietly produced no output. To leak the flag, we wrapped the command inside a JS `throw` statement:
+
+JavaScript
+
+```
+import('child_process').then(cp => {
+  throw cp.execSync('cat /flag*') + ''
+})
+```
+
+Throwing the command result forced Node.js to print the execution output directly into the standard error traceback, revealing the flag on our terminal.
+
+# Conclusion
+
+While falling short of our 5-flag target was tough, jailCTF 2026 proved to be an incredible learning experience. We walked away with a far sharper understanding of sandbox escapes, language compiler edge cases, and the reality of using AI in security operations. DeepSeek R4 Pro was a valuable partner for brainstorming syntax trees, but when budget limits hit and payloads needed surgical precision, human engineering made all the difference. We’ll be back for the next one—better prepared, smarter with our tokens, and ready to capture more flags. Also, I would like to 
+
+> 
+> 
+> 
+> ### Shout-Out to Team Power Rangers ⚡
+> 
+> A massive thanks to my teammates on **Team Power Rangers**—**Q**, [**Cedrick**](https://www.linkedin.com/in/cdcinco/), [**Angel**](https://www.linkedin.com/in/amikapl/), and [**Mark**](https://www.linkedin.com/in/mark-austin-pagarigan-3a2bba222/)—for pushing through the long hours, testing endless payload variations, and grinding until the clock ran out.
+> 
+> Also, huge credit to [Salvatore Abello's Python CTF Cheatsheet](https://github.com/salvatore-abello/python-ctf-cheatsheet/tree/main), which was an invaluable reference for navigating Python object hierarchies and escaping restricted sandboxes during the event.
+>
