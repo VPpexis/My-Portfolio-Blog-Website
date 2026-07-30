@@ -9,7 +9,7 @@ import rehypePrettyCode from "rehype-pretty-code"
 import { Badge } from "@/components/ui/badge"
 import { Container } from "@/components/ui/container"
 import { Section } from "@/components/ui/section"
-import { createMetadata } from "@/lib/metadata"
+import { createMetadata, siteConfig } from "@/lib/metadata"
 import { formatDate } from "@/lib/format"
 import { posts } from "#site/content"
 
@@ -32,6 +32,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
     description: post.description,
     path: `/blog/${post.slug}`,
     type: "article",
+    ogImage: `${siteConfig.url}/blog/${post.slug}/opengraph-image`,
     publishedTime: post.date,
     modifiedTime: post.updatedAt ?? post.date,
     tags: post.tags,
