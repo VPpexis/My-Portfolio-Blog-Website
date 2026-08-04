@@ -1,0 +1,402 @@
+---
+title: "AWS S3 HomeLab Part 7: Event Notifications"
+slug: aws-s3-homelab-part-7
+description: "S3 can tell other services when something happens. Your backup just finished. Your user just uploaded a photo. Act on it."
+date: 2026-08-04
+tags: ["AWS", "S3", "HomeLab"]
+category: "AWS"
+isDraft: false
+---
+
+# AWS S3: Home Lab Part 7
+
+Status: 🗓️Scheduled
+
+# **What Are S3 Event Notifications?**
+
+An event notification is S3's way of saying "something just happened in this bucket." When you configure it, S3 sends a JSON message to a target service describing exactly what occurred — which object, what action, when, and by whom.
+
+This is the foundation for **event-driven architectures** on S3. Instead of polling S3 to check if something changed (expensive, slow, error-prone), you configure S3 to push events to you. Your downstream systems react in real time.
+
+# **The Three Targets**
+
+| **Target** | **How S3 delivers** | **Best for** |
+| --- | --- | --- |
+| **Lambda** | S3 invokes the Lambda function synchronously, passing the event as the invocation payload | Real-time processing: resize uploaded images, virus scan, index new data, validate backup integrity |
+| **SQS** | S3 sends a message to the queue | Buffered/decoupled processing: batch jobs, retry logic, smoothing traffic spikes |
+| **SNS** | S3 publishes a message to the topic; it fans out to all subscribers | Broadcasting: email alerts, fan-out to multiple downstream systems, ops notifications |
+
+You can configure multiple notifications per bucket — e.g., `ObjectCreated` events go to Lambda for processing, while `ObjectRemoved` events go to SNS for alerting.
+
+# **Supported Event Types**
+
+| **Category** | **Event type** | **When it fires** |
+| --- | --- | --- |
+| **ObjectCreated** | `s3:ObjectCreated:Put` | Upload via PUT (CLI, SDK, console) |
+|  | `s3:ObjectCreated:Post` | Upload via browser POST form |
+|  | `s3:ObjectCreated:Copy` | Object copied within or between buckets |
+|  | `s3:ObjectCreated:*` | Any object creation (wildcard — most common) |
+| **ObjectRemoved** | `s3:ObjectRemoved:Delete` | Permanent delete (with version ID) |
+|  | `s3:ObjectRemoved:DeleteMarkerCreated` | Soft delete (no version ID, creates marker) |
+| **ObjectRestore** | `s3:ObjectRestore:Post` | Restore initiated from Glacier |
+|  | `s3:ObjectRestore:Completed` | Restore from Glacier finished |
+| **Lifecycle** | `s3:LifecycleTransition` | Object moved to a different storage class by lifecycle rule |
+|  | `s3:Replication:OperationFailedReplication` | CRR/SRR replication failed for an object |
+
+> **Pro tip:** Use `s3:ObjectCreated:*` as your default unless you specifically need to distinguish between Put, Post, and Copy. The wildcard catches all creation paths — including multipart upload completions.
+> 
+
+# Event Message Structure
+
+When S3 sends an event, the payload looks like this (example for an SQS message):
+
+```json
+{
+  "Records": [
+    {
+      "eventVersion": "2.1",
+      "eventSource": "aws:s3",
+      "awsRegion": "ap-southeast-1",
+      "eventTime": "2026-07-26T10:30:00.000Z",
+      "eventName": "ObjectCreated:Put",
+      "userIdentity": { "principalId": "AWS:AIDxxxxxxxx" },
+      "requestParameters": { "sourceIPAddress": "203.0.113.42" },
+      "responseElements": {
+        "x-amz-request-id": "ABC123",
+        "x-amz-id-2": "encoded-string"
+      },
+      "s3": {
+        "s3SchemaVersion": "1.0",
+        "configurationId": "BackupUploadToSQS",
+        "bucket": {
+          "name": "learn-devops-backup",
+          "ownerIdentity": { "principalId": "AIDxxxxxxxx" },
+          "arn": "arn:aws:s3:::learn-devops-backup"
+        },
+        "object": {
+          "key": "backups/db-2026-07-26.sql",
+          "size": 1048576,
+          "eTag": "d41d8cd98f00b204e9800998ecf8427e",
+          "versionId": "xyz789",
+          "sequencer": "0055AEABCDEF012345"
+        }
+      }
+    }
+  ]
+}
+```
+
+The key fields you'll use in downstream code:
+
+- `eventName` — what happened (Put, Delete, etc.)
+- `s3.bucket.name` — which bucket
+- `s3.object.key` — which object
+- `s3.object.size` — how big (useful for validation)
+- `s3.object.versionId` — which version (if versioning is on)
+
+# Filtering — Only Notify on What You Care About
+
+You can restrict which events fire based on **object key prefix** and **suffix**. This prevents your Lambda from being invoked for every single object in a bucket when you only care about one folder or file type.
+
+```json
+"Filter": {
+  "Key": {
+    "FilterRules": [
+      { "Name": "prefix", "Value": "backups/" },
+      { "Name": "suffix", "Value": ".sql" }
+    ]
+  }
+}
+```
+
+This rule only fires for objects whose key starts with `backups/` AND ends with `.sql`. Filtering at the S3 level is cheaper and simpler than filtering inside your Lambda function — fewer invocations, less code.
+
+# Permissions — S3 Needs to Talk to the Target
+
+For S3 to deliver events, the target must **grant S3 permission**. This is separate from your own IAM permissions. Each target handles it differently:
+
+| **Target** | **What S3 needs** | **How to grant it** |
+| --- | --- | --- |
+| **Lambda** | `lambda:InvokeFunction` | Add a resource-based policy on the Lambda function (S3 adds this automatically via console, CLI requires explicit policy) |
+| **SQS** | `sqs:SendMessage` | Add a queue policy allowing Principal `s3.amazonaws.com`, conditioned on the source bucket ARN |
+| **SNS** | `sns:Publish` | Add a topic policy allowing Principal `s3.amazonaws.com`, conditioned on the source bucket ARN |
+
+If you configure the event notification but forget the target's resource policy, S3 silently drops the events. No error appears in CloudTrail for the bucket owner — you just never receive the notifications.
+
+> **Delivery guarantees:** S3 event notifications are **at-least-once**. In rare cases, you may receive duplicate events for the same object action. Your downstream handler must be **idempotent** — able to process the same event multiple times without producing incorrect results.
+> 
+
+# Lab: S3 Event **→ SQS Queue**
+
+We'll use SQS as the target — simplest setup, no code to write. Create a bucket, a queue, wire them together, upload a file, and read the event from the queue.
+
+### **1. Create the bucket**
+
+```bash
+aws s3api create-bucket \
+  --bucket learn-devops-events-YOURNAME-0007 \
+  --region ap-southeast-1 \
+  --create-bucket-configuration LocationConstraint=ap-southeast-1
+```
+
+## 2. Create an SQS queue
+
+```bash
+aws sqs create-queue --queue-name s3-events-0007 --region ap-southeast-1
+```
+
+The response includes a `QueueUrl` — save it. It looks like:
+
+```bash
+https://sqs.ap-southeast-1.amazonaws.com/123456789012/s3-events-0007
+```
+
+## **3. Get the queue ARN and your AWS account ID**
+
+```bash
+aws sqs get-queue-attributes \
+  --queue-url "PASTE_YOUR_QUEUE_URL" \
+  --attribute-names QueueArn \
+  --region ap-southeast-1
+```
+
+> Don’t forget that the `--region` should be set if the SQS is created on the different region. Your default region might be `us-east-1`. To check your default region, use this command `aws configure get region`.
+> 
+
+```bash
+aws sts get-caller-identity --query Account --output text
+```
+
+Save the QueueArn and account ID. You'll need both in the next step.
+
+## **4. Add a queue policy allowing S3 to send messages**
+
+Without this, S3 has no permission to write to the queue. Create the policy file called `sqs-policy.json`(replace placeholders):
+
+```json
+{
+  "Policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"AllowS3ToSendMessages\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"s3.amazonaws.com\"},\"Action\":\"sqs:SendMessage\",\"Resource\":\"arn:aws:sqs:ap-southeast-1:934781888456:s3-events-0007\",\"Condition\":{\"ArnLike\":{\"aws:SourceArn\":\"arn:aws:s3:::learn-devops-events-vanpanugan-0007\"},\"StringEquals\":{\"aws:SourceAccount\":\"934781888456\"}}}]}"
+}
+```
+
+Set the SQS Policy by using `set-queue-attributes`.
+
+```bash
+aws sqs set-queue-attributes \
+  --queue-url "PASTE_YOUR_QUEUE_URL" \
+  --attributes file://sqs-policy.json \
+  --region ap-southeast-1
+```
+
+The `aws:SourceArn` condition is important — it prevents arbitrary S3 buckets from sending messages to your queue. The `--region` is important since SQS can be set into different regions.
+
+To check if we have successfully set the SQS Policy run this command:
+
+```bash
+aws sqs get-queue-attributes \
+	--queue-url "PASTE_YOUR_QUEUE_URL" 
+	--region ap-southeast-1 
+	--attribute-names Policy
+```
+
+> 
+> 
+> 
+> The AWS CLI `sqs set-queue-attributes` command expects `--attributes` as a key-value pair map (e.g., `Policy=<string>`). Passing a raw, multi-line IAM Policy JSON directly causes a `ParamValidation` parser error because the CLI attempts to map the top-level IAM keys (like `"Statement"`) directly to SQS attribute names. Additionally, in PowerShell, passing JSON directly via inline string substitution strips double quotes, leading to broken syntax during evaluation.
+> 
+> Structure the file as a valid SQS attribute payload where the `"Policy"` key maps to a minified, escaped JSON string representing the IAM policy document.
+> 
+
+## 5. Create the S3 event notification configuration
+
+Create a file called `event-notification.json`.
+
+```json
+{
+  "QueueConfigurations": [
+    {
+      "Id": "BackupFileUploads",
+      "QueueArn": "PASTE_YOUR_QUEUE_ARN",
+      "Events": ["s3:ObjectCreated:*"],
+      "Filter": {
+        "Key": {
+          "FilterRules": [
+            { "Name": "prefix", "Value": "backups/" },
+            { "Name": "suffix", "Value": ".sql" }
+          ]
+        }
+      }
+    }
+  ]
+}
+```
+
+Then upload it using this command:
+
+```bash
+aws s3api put-bucket-notification-configuration \
+  --bucket learn-devops-events-YOURNAME-0007 \
+  --notification-configuration file://event-notification.json
+```
+
+This tells S3: "whenever an object is created under `backups/` ending in `.sql`, send a message to this SQS queue."
+
+## 6. Verify the notification configuration
+
+```bash
+aws s3api get-bucket-notification-configuration --bucket learn-devops-events-YOURNAME-0007
+```
+
+You should see your `BackupFileUploads` config with the queue ARN, events, and filter rules.
+
+## 7. Upload a file that matches the filter (should trigger event)
+
+Create a simple `db-backup.sql` for testing.
+
+```bash
+-- Database backup
+-- Server: prod-db-01
+-- Date: 2026-07-26
+-- Size: 1.2 GB compressed
+```
+
+Upload the file to s3
+
+```bash
+aws s3 cp db-backup.sql s3://learn-devops-events-YOURNAME-0007/backups/db-backup.sql
+```
+
+## 8. Upload a file that does NOT match the filter (no event expected)
+
+Create a file `app.log`.
+
+```bash
+random log data
+```
+
+Upload the file to s3.
+
+```bash
+aws s3 cp app.log s3://learn-devops-events-YOURNAME-0007/logs/app.log
+```
+
+This file is in `logs/` and ends in `.log` — it doesn't match the `backups/` prefix or `.sql` suffix. No event should be generated.
+
+## 9. Poll the SQS queue — read the event message
+
+Wait a few seconds for the event to be delivered, then poll the queue:
+
+```bash
+aws sqs receive-message \
+  --queue-url "PASTE_YOUR_QUEUE_URL" \
+  --max-number-of-messages 10 \
+  --wait-time-seconds 5 \
+  --region ap-southeast-1
+```
+
+This is the output:
+
+```json
+{
+    "Messages": [
+        {
+            "MessageId": "8e0ec8e3-82a3-43c6-954e-880f10ba8f31",
+            "ReceiptHandle": "AQEBHH9kA+IS+5+TxrY9NnI57PgyRHVvpFRpN5g/UNnw6GTu68WjJKvMJMk9f5qaDIITa8YGDPh3/5Z70u2G9mr0TXvlM8AWHfI8wVc/Q8yk9JN+FSNXQYPOcDzl1yoOhhqFx/dpksDcEk5+SAaUabjmd5kUHhcmioAYRzX1HTNHbyHCAt4ir8qwhqXjnfMed/QO6Zpg8KExfLAih089u1O3Q+fg4iXEcnQT5LdrzXfBynXhWFuFAxQMcRtBsGPpwL8MbVN1lnGXFHWci1IqP5PS75qIWXvfVeQd4fgx7sZU1WBXUuOl7B6b+iDAuuSEK6JFPXQSGb0zi5n8xh46a0xOHI2f8HjwXNJAMY5RBXHg2lw5BlTMDCXgX3omP884A/KZxhL9QeSIZ39PhrJQAM0yVQ==",
+            "MD5OfBody": "19144816514fc19ccf7c8ce2f8ba041b",
+            "Body": "{\"Records\":[{\"eventVersion\":\"2.5\",\"eventSource\":\"aws:s3\",\"awsRegion\":\"ap-southeast-1\",\"eventTime\":\"2026-07-30T15:19:46.787Z\",\"eventName\":\"ObjectCreated:Put\",\"userIdentity\":{\"principalId\":\"A11Z9PUARC6FMJ\"},\"requestParameters\":{\"sourceIPAddress\":\"131.226.103.53\"},\"responseElements\":{\"x-amz-request-id\":\"E5ZD6ZDZHXKBAR9H\",\"x-amz-id-2\":\"2ehYPcA3DkCI+ikUGa1rU5wvsbiH/KtbzAIvkYgR6pfvFjFP2YB5rAWvBhLZ8Zsais7Gk1yRtj6eKDJqKi+Ru57O/SysfxKJ\"},\"s3\":{\"s3SchemaVersion\":\"1.0\",\"configurationId\":\"BackupFileUploads\",\"bucket\":{\"name\":\"learn-devops-events-vanpanugan-0007\",\"ownerIdentity\":{\"principalId\":\"A11Z9PUARC6FMJ\"},\"arn\":\"arn:aws:s3:::learn-devops-events-vanpanugan-0007\"},\"object\":{\"key\":\"backups/db-backups-v3.sql\",\"size\":90,\"eTag\":\"88b9b3a1ec27414b863887d32dadda84\",\"sequencer\":\"006A6B6B929F8943E4\"}}}]}"
+        }
+    ]
+}
+
+```
+
+You have received **one message** (for `db-backup.sql`). The message body is JSON — inside it find `"Records"`, then `"s3"`, then `"object"`. The `"key"` field should be `backups/db-backup.sql`.
+
+No message appears for `app.log` — the filter worked.
+
+## 10. Inspect the full event payload
+
+Extract the message body and format it for readability:
+
+```
+aws sqs receive-message \
+  --queue-url "PASTE_YOUR_QUEUE_URL" \
+  --max-number-of-messages 1 \
+  --wait-time-seconds 3 \
+  --query "Messages[0].Body" \
+  --region ap-southeast-1 \
+  --output text
+```
+
+This is the output:
+
+```json
+{
+  "Records": [
+    {
+      "eventVersion": "2.5",
+      "eventSource": "aws:s3",
+      "awsRegion": "ap-southeast-1",
+      "eventTime": "2026-07-30T15:03:34.386Z",
+      "eventName": "ObjectCreated:Put",
+      "userIdentity": {
+        "principalId": "A11Z9PUARC6FMJ"
+      },
+      "requestParameters": {
+        "sourceIPAddress": "131.226.103.53"
+      },
+      "responseElements": {
+        "x-amz-request-id": "RE50RQB0MKQD3SVK",
+        "x-amz-id-2": "Ypt+DRO3C0HTeZOrATH9VNukuLnlee7uXH51CTbZS/3iCGnVGv+wJ9wSdMUVz1gD7Pf3XQ5iIp9WUgecls2sKk+85afQ933X"
+      },
+      "s3": {
+        "s3SchemaVersion": "1.0",
+        "configurationId": "BackupFileUploads",
+        "bucket": {
+          "name": "learn-devops-events-vanpanugan-0007",
+          "ownerIdentity": {
+            "principalId": "A11Z9PUARC6FMJ"
+          },
+          "arn": "arn:aws:s3:::learn-devops-events-vanpanugan-0007"
+        },
+        "object": {
+          "key": "backups/db-backups.sql",
+          "size": 90,
+          "eTag": "88b9b3a1ec27414b863887d32dadda84",
+          "sequencer": "006A6B67C63B3537C8"
+        }
+      }
+    }
+  ]
+}
+```
+
+You'll see the complete JSON structure from section 4 — `eventName`, `eventTime`, `s3.bucket.name`, `s3.object.key`, `s3.object.size`. This is exactly what your downstream code (Lambda, backup validator, etc.) would parse.
+
+## 11. Cleanup
+
+```bash
+aws s3 rm s3://learn-devops-events-YOURNAME-0007/ --recursive
+aws s3api delete-bucket --bucket learn-devops-events-YOURNAME-0007
+aws sqs delete-queue --queue-url "PASTE_YOUR_QUEUE_URL" --region ap-southeast-1
+```
+
+> **Mission connection:** In your backup project, event notifications can trigger a Lambda that validates backup integrity (check file size, verify checksums, send Slack alert). In your static site project, a Lambda triggered by S3 events can optimize images on upload or invalidate a CloudFront cache. Event notifications are the glue that turns S3 from a passive store into an active participant in your architecture.
+> 
+
+# Common Event-Driven Patterns on S3
+
+| **Pattern** | **Event** | **Target** | **What it does** |
+| --- | --- | --- | --- |
+| Image resizing | `ObjectCreated:Put` on `uploads/*.jpg` | Lambda | Generates thumbnails, writes them to `thumbnails/` |
+| Backup validation | `ObjectCreated:*` on `backups/*` | Lambda | Checks file size, computes checksum, sends alert if anomalous |
+| Virus scanning | `ObjectCreated:*` on `uploads/*` | Lambda | Scans file with ClamAV; tags/quarantines if infected |
+| Ops alerts | `ObjectRemoved:*` anywhere | SNS → Email | Notifies team when objects are deleted (audit trail) |
+| Data pipeline | `ObjectCreated:*` on `incoming/*.csv` | SQS → Lambda | Queue buffers uploads; Lambda processes in batches |
+| Replication monitoring | `s3:Replication:OperationFailedReplication` | SNS | Alerts on CRR/SRR failures |
+
+# Primary Sources
+
+- [S3 User Guide — Enabling event notifications](https://docs.aws.amazon.com/AmazonS3/latest/userguide/NotificationHowTo.html)
+- [S3 User Guide — Event message structure](https://docs.aws.amazon.com/AmazonS3/latest/userguide/notification-content-structure.html) (full JSON schema for every event type)
+- [S3 User Guide — Supported event types](https://docs.aws.amazon.com/AmazonS3/latest/userguide/EventNotifications.html) (complete list with descriptions)
