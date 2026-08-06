@@ -1,0 +1,251 @@
+---
+title: "AWS S3 HomeLab Part 8: Event Notifications"
+slug: aws-s3-homelab-part-8
+description: "Share a private object with anyone, for a limited time, without giving them AWS credentials. It's a cryptographically signed, expiring link — no IAM user required."
+date: 2026-08-06
+tags: ["AWS", "S3", "HomeLab"]
+category: "AWS"
+isDraft: false
+---
+
+# What Is a Pre-signed URL?
+
+A pre-signed URL is a time-limited, cryptographically signed link that grants temporary access to an S3 object. The person who generates the URL uses their AWS credentials to sign it; the person who uses the URL needs **no AWS credentials at all**.
+
+Think of it like a guest pass. You own the building (the bucket) and have a key (your IAM credentials). Instead of giving everyone a copy of your key or leaving the door unlocked (making the bucket public), you issue a guest pass that expires. The guest pass proves you authorized access, works for a limited time, and can't be reused after it expires.
+
+> **Key insight:** The person clicking the pre-signed URL doesn't need an AWS account, IAM user, access key, or any AWS knowledge. The URL itself carries the authorization. This is how you share private objects without ever making your bucket public.
+> 
+
+# How Pre-signed URLs Work
+
+When you create a pre-signed URL, the AWS SDK or CLI performs **AWS Signature V4 signing** using your credentials. The signature is embedded directly in the URL as query parameters. When S3 receives a request with a pre-signed URL, it validates:
+
+1. **The signature** — does it match what the declared credentials would produce for this exact request?
+2. **The expiration** — has the timestamp passed?
+3. **The permissions** — was the signing principal actually authorized to perform this action on this object at the time the URL was generated?
+
+No API call to IAM happens at access time. The signature and the timestamp are self-contained proof that someone with valid credentials authorized this specific operation.
+
+> **Important nuance:** S3 checks whether the *signer* had permission at the moment the URL is *used*, not when it was created. If the signer's IAM permissions are revoked before the URL expires, the URL stops working — even if the signature and expiration are still valid.
+> 
+
+# Pre-signed URL for GET (Download / Share)
+
+The most common use case: you have a private object and you want to give someone temporary download access.
+
+```
+aws s3 presign s3://my-bucket/reports/q4-financials.pdf \
+  --expires-in 3600
+```
+
+This generates a URL valid for 3,600 seconds (1 hour). Anyone with the URL can download `q4-financials.pdf` during that window. After it expires, S3 returns `403 Forbidden` — the signature is no longer valid.
+
+You can specify any duration up to **7 days (604,800 seconds)** with Signature V4. If you need longer, you'd need to use Signature V2 (deprecated — don't use it).
+
+| **Parameter** | **Description** | **Example** |
+| --- | --- | --- |
+| `--expires-in` | Seconds until the URL expires | `3600` (1 hour) |
+| `--region` | AWS region (if not in default profile) | `ap-southeast-1` |
+
+# Pre-signed URL for PUT (Upload)
+
+You can also generate a pre-signed URL that allows someone to **upload** an object — without giving them write access to your bucket. This is commonly used for direct-to-S3 uploads from browsers or mobile apps: your backend generates the URL, the client uploads directly to S3.
+
+However, **`aws s3 presign` only generates GET URLs**. For PUT pre-signed URLs, you need an AWS SDK:
+
+```
+# Python (boto3)
+import boto3
+url = boto3.client('s3').generate_presigned_url(
+    'put_object',
+    Params={'Bucket': 'my-bucket', 'Key': 'uploads/file.csv'},
+    ExpiresIn=1800
+)
+print(url)
+
+# Then the client uploads:
+# curl -X PUT -T file.csv "PRESIGNED_URL"
+```
+
+> **CLI reality:** `aws s3 presign` generates pre-signed GET URLs only. For PUT/POST pre-signed URLs, use an AWS SDK (boto3, JavaScript SDK, etc.). The lab in this lesson focuses on GET pre-signing — the most common and CLI-accessible pattern. PUT pre-signing is a natural next step when you build an application backend.
+> 
+
+# Anatomy of a Pre-signed URL
+
+Here's what a pre-signed URL actually looks like (with annotations):
+
+```
+https://my-bucket.s3.ap-southeast-1.amazonaws.com/reports/q4.pdf
+?X-Amz-Algorithm=AWS4-HMAC-SHA256
+&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20260730%2Fap-southeast-1%2Fs3%2Faws4_request
+&X-Amz-Date=20260730T120000Z
+&X-Amz-Expires=3600
+&X-Amz-SignedHeaders=host
+&X-Amz-Signature=6b6e0f9c3c1234567890abcdef1234567890abcdef1234567890abcdef
+```
+
+| **Parameter** | **What it means** |
+| --- | --- |
+| `X-Amz-Algorithm` | The signing algorithm (AWS4-HMAC-SHA256 = Signature V4) |
+| `X-Amz-Credential` | The access key ID + scope (date, region, service, termination string) |
+| `X-Amz-Date` | The date/time in ISO 8601 format (UTC) |
+| `X-Amz-Expires` | How many seconds the URL is valid from X-Amz-Date |
+| `X-Amz-SignedHeaders` | Which HTTP headers are included in the signature (must match the request) |
+| `X-Amz-Signature` | The HMAC-SHA256 signature that proves the URL was authorized |
+
+# Security Considerations
+
+| **Principle** | **Why it matters** | **Best practice** |
+| --- | --- | --- |
+| **Short expiration** | The URL is a bearer token — anyone who has it can access the object. Longer expiration = longer exposure window. | Use the shortest practical expiration. 5–15 minutes for user downloads, 1 hour for async workflows. Never max out at 7 days unless you have a specific reason. |
+| **Least privilege signer** | The URL inherits the signer's permissions at access time. A signer with `s3:GetObject` on `*` could generate a URL for any object. | Generate pre-signed URLs from a role/service with narrowly scoped IAM permissions — only the specific bucket and prefix needed. |
+| **HTTPS everywhere** | Pre-signed URLs sent over plain HTTP can be intercepted and stolen. The URL contains the signature in the query string — it's visible in server logs, browser history, and proxy caches. | Always serve and transmit pre-signed URLs over HTTPS. `aws s3 presign` uses HTTPS by default. |
+| **Revocation is slow** | Once generated, a pre-signed URL can't be "un-signed." Your only options: delete the object, revoke the signer's IAM permissions (affects all URLs signed by that principal), or wait for it to expire. | Keep expirations short. If you absolutely must support revocation, use CloudFront signed URLs instead — they support key rotation. |
+| **Logging matters** | Every access via pre-signed URL is logged in S3 server access logs (if enabled) and CloudTrail. The log shows the signer's principal, not the end user. | Enable S3 server access logging on buckets where pre-signed URLs are used heavily. You'll want an audit trail. |
+
+**Shared-responsibility trap:** S3 enforces the signature and expiration. But if you email a pre-signed URL, post it in Slack, or log it to CloudWatch in plaintext — that's on you. Anyone who sees it can use it until it expires. Treat pre-signed URLs like passwords.
+
+# **Pre-signed URLs vs. Making Objects Public**
+
+|  | **Pre-signed URL** | **Public object (bucket policy)** |
+| --- | --- | --- |
+| **Access window** | Limited (seconds to 7 days) | Permanent (until you change the policy) |
+| **Who can access** | Only people with the URL | Anyone who knows or guesses the object key |
+| **Revocation** | Expires automatically; can revoke signer's IAM for immediate killswitch | Update bucket policy (and wait for propagation) |
+| **Object discoverability** | URL is the only way in — can't list the bucket | Anyone can guess keys; listing may be possible |
+| **Use case** | Share specific files with specific people, temporarily | Static website assets, public datasets, CDN origins |
+
+# Lab: Pre-signed URLs for Private Object Sharing
+
+You’ll create a private bucket, upload a sensitive file, generate a pre-signed URL, and verify it works — then watch it expire.
+
+## 1. Create a private bucket
+
+```bash
+aws s3api create-bucket \
+  --bucket learn-devops-presign-YOURNAME-0008 \
+  --region ap-southeast-1 \
+  --create-bucket-configuration LocationConstraint=ap-southeast-1
+```
+
+No bucket policy, no public access — this bucket is completely private.
+
+## 2. Create a sample file with sensitive content
+
+Createa a file called `product-launch-brief.txt`
+
+```bash
+CONFIDENTIAL — INTERNAL USE ONLY
+Project: Q3 Product Launch
+Revenue Target: $2.4M
+Launch Date: 2026-09-15
+Key Partners: Acme Corp, Globex Inc, Initech
+```
+
+## 3. Upload the file to the private bucket
+
+```bash
+aws s3 cp product-launch-brief.txt s3://learn-devops-presign-YOURNAME-0008/internal/product-launch-brief.txt
+```
+
+## 4. Confirm the object is private
+
+Try accessing it directly via the REST endpoint:
+
+```bash
+curl -I https://learn-devops-presign-YOURNAME-0008.s3.ap-southeast-1.amazonaws.com/internal/product-launch-brief.txt
+```
+
+Alternatively, try your browser — you'll get an `AccessDenied` XML response. This is the correct behavior for a private object.
+
+## 5. Generate a pre-signed URL (short expiration)
+
+To generate the pre-signed URL use this command:
+
+```bash
+aws s3 presign s3://learn-devops-presign-YOURNAME-0008/internal/product-launch-brief.txt \
+  --expires-in 120
+```
+
+The command outputs a URL starting with `https://`. It's valid for **2 minutes** (120 seconds). Copy the URL.
+
+## 6. Use the pre-signed URL immediately
+
+Paste the URL into your browser, or use curl:
+
+```
+curl "PASTE_YOUR_PRESIGNED_URL"
+```
+
+You should see the confidential file content. No AWS credentials required — the URL itself proves you're authorized.
+
+## 7. Inspect the URL structure
+
+Break down the URL you generated. Identify each parameter from section 5:
+
+- Find the `X-Amz-Expires` value — it should be `120`
+- Find the `X-Amz-Credential` — it contains your access key ID, date, region, and service
+- Find the `X-Amz-Signature` — the long hex string at the end
+
+## 8. Wait for expiration, then try again
+
+Wait **at least 2 minutes** (the 120-second window). Then access the same URL again in your browser or with curl:
+
+```
+curl -I "PASTE_YOUR_EXPIRED_PRESIGNED_URL"
+```
+
+You should now get `403 Forbidden` with a message like `Request has expired`. The URL is dead — the guest pass has been revoked by time.
+
+## 9 Experiment: Tamper with a pre-signed URL
+
+Generate a fresh pre-signed URL (120 second expiration). Before it expires:
+
+1. Copy the URL.
+2. Change one character in the object key (e.g., `product-launch-brief.txt` → `product-launch-briefX.txt`).
+3. Try to access the modified URL.
+
+```
+# Example: access with a deliberately corrupted URL
+curl -I "MODIFIED_URL"
+```
+
+Result: `403 SignatureDoesNotMatch`. The signature cryptographically binds the URL to the exact key — any modification invalidates it.
+
+## 10 Generate a longer-lived URL and test
+
+```
+aws s3 presign s3://learn-devops-presign-YOURNAME-0008/internal/product-launch-brief.txt \
+  --expires-in 604800
+```
+
+This generates a URL valid for **7 days** — the maximum. Verify it works, then mentally note: *anyone who gets this URL in the next week can download this file*. This is why short expirations matter.
+
+## 11 Cleanup
+
+```
+aws s3 rm s3://learn-devops-presign-YOURNAME-0008/ --recursive
+aws s3api delete-bucket --bucket learn-devops-presign-YOURNAME-0008
+```
+
+> **Mission connection:** In your backup project, pre-signed URLs let your backup validation system share verification reports with stakeholders without making the reports bucket public. In your static site project, you can use pre-signed URLs for gated content — share premium downloads, private documents, or internal assets without exposing them to the internet. Pre-signed URLs are the bridge between "everything is private" and "only the right people get access."
+> 
+
+# Common Pre-signed URL Patterns
+
+| **Pattern** | **Method** | **Expiration** | **What it does** |
+| --- | --- | --- | --- |
+| Secure download link | GET | 5–60 minutes | Generate a link in a web app; user clicks to download a private report |
+| Direct-to-S3 upload | PUT | 10–30 minutes | Mobile app or browser uploads directly to S3 without going through your backend |
+| One-time access token | GET | 30 seconds | Email verification link that expires almost immediately after sending |
+| Partner file exchange | GET | 24 hours | Share a large dataset with an external partner; no account provisioning needed |
+| Batch export job | GET | 7 days | Generate a URL for a data export; the downstream system polls until the export is ready |
+| Support ticket attachment | PUT | 1 hour | Customer uploads a screenshot/log directly to your bucket via a support portal |
+
+# Primary Sources
+
+- [S3 User Guide — Working with pre-signed URLs](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html)
+- [S3 User Guide — Uploading objects using pre-signed URLs](https://docs.aws.amazon.com/AmazonS3/latest/userguide/PresignedUrlUploadObject.html) (PUT/POST patterns)
+- [S3 API Reference — Signature V4 query string authentication](https://docs.aws.amazon.com/AmazonS3/latest/API/sigv4-query-string-auth.html) (how the signing works under the hood)
+- [AWS CLI Command Reference — s3 presign](https://docs.aws.amazon.com/cli/latest/reference/s3/presign.html)
