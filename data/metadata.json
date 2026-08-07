@@ -28,6 +28,23 @@
             "results": "Delivered a working prototype that helped visualize regional case trends for academic assessment."
         },
         {
+            "title": "FMIS API",
+            "description": "A RESTful inventory management API for food manufacturing — batch/lot tracking, FEFO consumption, production orders, JWT auth, and pessimistic locking. Built with Go + PostgreSQL.",
+            "tags": ["Go", "Backend", "API", "Docker", "Personal"],
+            "category": "Personal",
+            "type": "Backend",
+            "link": "https://github.com/VPpexis/fmis-api",
+            "github": "https://github.com/VPpexis/fmis-api",
+            "image": "/assets/fmis-api_architecture.jpg",
+            "featured": false,
+            "role": "Backend Developer",
+            "duration": "2026 - Present",
+            "technologies": ["Go", "PostgreSQL", "Docker", "go-chi/chi", "Atlas", "JWT"],
+            "challenges": "Designing race-condition-safe inventory deductions where production orders consume stock from the same batches concurrently.",
+            "solutions": "Used PostgreSQL SELECT ... FOR UPDATE pessimistic locking, FEFO (First-Expired, First-Out) consumption logic, and immutable audit logs for stock movements.",
+            "results": "Core API foundation is in place — config, pgx pool, chi router, health check, and Atlas migrations — with JWT auth and the full auth/products/batches/inventory/production API still in progress."
+        },
+        {
             "title": "Jzaki Enterprises Website",
             "description": "A brand showcase and customer inquiry platform for a local food manufacturing enterprise, modernizing product discovery for traditional Filipino treats.",
             "tags": ["Next.js", "React", "Tailwind CSS", "Web Dev", "Professional"],
