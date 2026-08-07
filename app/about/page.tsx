@@ -1,10 +1,10 @@
 import Image from "next/image"
 import Link from "next/link"
 import {
-  Code2,
+  Server,
+  Database,
   Workflow,
   Cloud,
-  Terminal,
   ArrowRight,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -36,16 +36,16 @@ const imgCarousel: HobbyImage[] = [
 
 const domains = [
   {
-    title: "Full-Stack Web Development",
-    icon: Code2,
+    title: "Backend Engineering & API Design",
+    icon: Server,
     description:
-      "Building modern, type-safe web apps with TypeScript, React, and Next.js — from component systems to fully static, SEO-friendly sites.",
+      "Building reliable REST APIs and services in Go — clean architecture, JWT auth, and concurrency-safe data flows from schema to endpoint.",
   },
   {
-    title: "CI/CD & Automation",
-    icon: Workflow,
+    title: "Databases & Data Modeling",
+    icon: Database,
     description:
-      "Designing pipelines with GitHub Actions, linting gates, and pre-commit hooks so quality is enforced by machines, not memory.",
+      "Modeling PostgreSQL schemas with Atlas migrations and writing efficient, transaction-safe queries that keep data integrity front and center.",
   },
   {
     title: "Cloud & Containers",
@@ -54,10 +54,10 @@ const domains = [
       "Deploying on AWS and shipping reproducible environments with Docker and Linux — build once, run anywhere.",
   },
   {
-    title: "Scripting & Data",
-    icon: Terminal,
+    title: "CI/CD & Automation",
+    icon: Workflow,
     description:
-      "Using Python for tooling, automation, and data-driven projects like CovidRecon.",
+      "Designing pipelines with GitHub Actions, linting gates, and pre-commit hooks so quality is enforced by machines, not memory.",
   },
 ]
 
@@ -76,15 +76,14 @@ export default function AboutPage() {
               <p className="text-lg leading-relaxed text-muted-foreground">
                 I&apos;m <strong>{siteData.profile.name}</strong>, a{" "}
                 {siteData.profile.title.toLowerCase()} who cares just as much
-                about how software ships as what it does. My work lives at the
-                intersection of full-stack development and cloud
-                infrastructure—building scalable, high-performance web
-                applications, then architecting the automated CI/CD pipelines
-                that keep them fast and resilient. Rooted in a Computer
-                Engineering background, early challenges like developing a COVID
-                data-reconnaissance tool taught me a core principle I still
-                build by today: great engineering is equal parts curiosity,
-                precision, and discipline.
+                about how software ships as what it does. My focus is backend
+                engineering — building reliable REST APIs, modeling PostgreSQL
+                databases, and writing services with clean, concurrency-safe
+                architecture — while steadily growing into cloud infrastructure
+                and DevOps. Rooted in a Computer Engineering background, early
+                challenges like developing a COVID data-reconnaissance tool
+                taught me a core principle I still build by today: great
+                engineering is equal parts curiosity, precision, and discipline.
               </p>
             </div>
             <div className="md:col-span-2 flex justify-center">
@@ -176,11 +175,12 @@ export default function AboutPage() {
               What I&apos;m Exploring Now
             </h2>
             <p className="text-lg leading-relaxed text-muted-foreground mb-10">
-              Right now I&apos;m deepening this very site — evolving it toward a
-              content-driven architecture, sharpening my{" "}
-              <strong>cloud infrastructure</strong> skills, and building out new
-              projects along the way. I treat learning like a pipeline: always
-              something in staging.
+              Right now I&apos;m deepening my backend skills — building out a Go
+              and PostgreSQL inventory API with lock-safe stock management,
+              evolving this site toward a content-driven architecture, and
+              growing my <strong>cloud infrastructure</strong> expertise for the
+              eventual move into DevOps. I treat learning like a pipeline:
+              always something in staging.
             </p>
 
             <div className="flex flex-wrap items-center justify-center gap-4">
