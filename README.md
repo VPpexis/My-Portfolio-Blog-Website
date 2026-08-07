@@ -72,3 +72,5 @@ Husky + lint-staged run `eslint --fix` on staged JS/TS files at pre-commit.
 - Implemented linting on local machine using ESLint and Husky with a custom configuration to enforce code quality and consistency.
 - Created Dockerfile (production), Dockerfile.dev (development with hot-reload), and docker-compose for cross-platform containerization.
 - Built a cohesive design system and reusable component library for consistent UI across all pages.
+- Deployed the site to production on Vercel, with Docker and docker-compose providing a reproducible, cross-platform local/self-hosted release workflow.
+- Improved search discoverability with SEO: generated a `sitemap.xml` and `robots.txt` at build time, added dynamic Open Graph / Twitter cards (including per-post OG images), and verified indexing via Google Search Console.
