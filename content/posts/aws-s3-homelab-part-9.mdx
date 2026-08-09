@@ -1,0 +1,435 @@
+---
+title: "AWS S3 HomeLab Part 9: S3 Replication"
+slug: aws-s3-homelab-part-9
+description: "Automatically copy every object to another bucket — same region or across the globe. For disaster recovery, compliance, and keeping data close to users."
+date: 2026-08-10
+tags: ["AWS", "S3", "HomeLab"]
+category: "AWS"
+isDraft: false
+---
+
+# What Is S3 Replication?
+
+S3 Replication is an automatic, asynchronous copy engine. You configure a replication rule on a source bucket, and S3 copies every new object (and optionally existing ones) to a destination bucket. The replication happens in the background — your upload succeeds immediately, and S3 handles the copy.
+
+There are two types:
+
+| **Type** | **Destination** | **Use case** |
+| --- | --- | --- |
+| **SRR** — Same-Region Replication | Bucket in the same AWS region | Compliance (separate logs bucket), aggregation (merge data from multiple accounts), testing on production data without touching production |
+| **CRR** — Cross-Region Replication | Bucket in a different AWS region | Disaster recovery (your primary region goes down, data lives in another), latency reduction (serve objects from the region closest to users), compliance (data sovereignty — keep data in a specific country) |
+
+> **Replication is eventually consistent, not real-time.** S3 replicates objects asynchronously. Most objects replicate within seconds to minutes, but there's no SLA for standard replication. For time-sensitive replication, use **Replication Time Control (RTC)** — covered in section 6.
+
+# Prerequisites — What Must Be in Place Before Replication Works
+
+| **Requirement** | **Applies to** | **Why** |
+| --- | --- | --- |
+| **Versioning enabled** | Both source and destination buckets | Replication works at the version level. S3 tracks which versions have been replicated and which haven't. Disabling versioning on either bucket suspends replication. |
+| **IAM role** | Source bucket configuration references the role | S3 assumes this role to read from the source bucket and write to the destination bucket. The role needs `s3:GetObjectVersion` on source + `s3:ReplicateObject` on destination. |
+| **Different buckets** | Source ≠ destination | S3 doesn't allow a bucket to replicate to itself. The destination can be in the same account or a different account. |
+| **Region support** | Both regions must support replication | Almost all commercial regions support CRR. Some GovCloud and China regions have restrictions. |
+
+> **Gotcha:** Versioning must be enabled on both buckets *before* you create the replication rule. If you enable versioning after creating the rule, S3 won't backfill — it only starts replicating objects uploaded after the rule is active.
+
+# Replication Rule Configuration
+
+A replication rule is JSON under the hood. Here's what a minimal CRR rule looks like:
+
+```json
+{
+  "Role": "arn:aws:iam::123456789012:role/s3-crr-role",
+  "Rules": [
+    {
+      "ID": "ReplicateEverything",
+      "Status": "Enabled",
+      "Priority": 1,
+      "Filter": { "Prefix": "" },
+      "DeleteMarkerReplication": { "Status": "Disabled" },
+      "Destination": {
+        "Bucket": "arn:aws:s3:::learn-devops-replica-ap-southeast-1",
+        "StorageClass": "STANDARD_IA"
+      }
+    }
+  ]
+}
+```
+
+| **Field** | **What it controls** |
+| --- | --- |
+| `Role` | The IAM role S3 assumes to perform replication |
+| `ID` | A human-readable label for this rule |
+| `Status` | `Enabled` or `Disabled` — you can pause replication without deleting the rule |
+| `Priority` | When multiple rules match an object, the lower-numbered rule wins. Required only if you have multiple rules. |
+| `Filter` | Which objects to replicate — by prefix, tags, or both. Empty `""` means all objects. |
+| `DeleteMarkerReplication` | Whether deleting the source object also creates a delete marker on the replica |
+| `Destination.Bucket` | The ARN of the destination bucket |
+| `Destination.StorageClass` | Optional — override the storage class for replicas (e.g., replicate as STANDARD_IA even if source is STANDARD) |
+
+> **Storage class trick:** You can replicate production data in STANDARD to a cheaper storage class (e.g., ONEZONE_IA or DEEP_ARCHIVE) in the destination bucket. This saves money on replicas that you hope to never use but must keep for compliance.
+
+# IAM Role for Replication
+
+S3 needs permission to read from your source bucket and write to your destination. This is granted via an IAM role that S3 assumes. The trust policy must allow `s3.amazonaws.com` to assume the role:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": { "Service": "s3.amazonaws.com" },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+```
+
+The permissions policy needs:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObjectVersionForReplication",
+        "s3:GetObjectVersionTagging",
+        "s3:GetObjectVersionAcl"
+      ],
+      "Resource": "arn:aws:s3:::SOURCE_BUCKET/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:ReplicateObject",
+        "s3:ReplicateDelete",
+        "s3:ReplicateTags"
+      ],
+      "Resource": "arn:aws:s3:::DESTINATION_BUCKET/*"
+    }
+  ]
+}
+```
+
+Notice the fine-grained `GetObjectVersionForReplication` action — this is specifically for replication and different from `s3:GetObject`. The role can read objects for replication purposes but not for general downloads.
+
+# Replication Time Control (RTC)
+
+Standard S3 replication has no delivery SLA — objects typically replicate within seconds or minutes, but S3 doesn't guarantee it. **Replication Time Control (RTC)** adds a predictable SLA:
+
+- **99.99%** of objects replicated within **15 minutes**
+- **99.9%** of objects replicated within **15 minutes** during the largest replication workloads
+- CloudWatch metrics showing replication latency and pending objects
+- Replication failure notifications via EventBridge
+
+RTC costs extra — you pay a per-object replication fee on top of the regular replication charges. Enable it when you need predictability: compliance deadlines, DR with RPO (Recovery Point Objective) requirements, or real-time data aggregation.
+
+```json
+# Adding RTC to a replication rule:
+"Destination": {
+  "Bucket": "arn:aws:s3:::dest-bucket",
+  "Metrics": { "Status": "Enabled", "EventThreshold": { "Minutes": 15 } },
+  "ReplicationTime": { "Status": "Enabled", "Time": { "Minutes": 15 } }
+}
+```
+
+# Monitoring Replication
+
+You need visibility into whether replication is actually working. Three tools:
+
+| **Tool** | **What it tells you** |
+| --- | --- |
+| **Replication metrics** (CloudWatch) | How many objects are pending replication, how long replication is taking, which rules are active. Enable via `Metrics` on the replication rule. |
+| **Replication failure events** (EventBridge) | When an object fails to replicate and why (permissions, KMS key access, etc.). Route these to SNS for alerting. |
+| **`ReplicationStatus`** on objects | Each object version has a replication status: `PENDING`, `COMPLETED`, `FAILED`, or `REPLICA`. Query it with `s3api head-object`. |
+
+```bash
+aws s3api head-object \
+  --bucket my-source-bucket \
+  --key reports/sales.csv \
+  --query "ReplicationStatus"
+```
+
+> **Don't set and forget:** Replication failures are silent unless you explicitly enable metrics and EventBridge notifications. If the destination bucket permissions break, your objects stop replicating and you won't know until you check. Always enable monitoring.
+
+# Lab: Cross-Region Replication (CRR)
+
+Set up CRR between ap-southeast-1 (source) and us-east-1 (destination). Create the buckets, configure the IAM role, create the replication rule, upload objects, and verify they appear in the destination bucket.
+
+### 1. Create source bucket (ap-southeast-1) with versioning
+
+```bash
+aws s3api create-bucket \
+  --bucket learn-devops-source-YOURNAME-0009 \
+  --region ap-southeast-1 \
+  --create-bucket-configuration LocationConstraint=ap-southeast-1
+
+aws s3api put-bucket-versioning \
+  --bucket learn-devops-source-YOURNAME-0009 \
+  --versioning-configuration Status=Enabled
+```
+
+### 2. Create destination bucket (us-east-1) with versioning
+
+```bash
+aws s3api create-bucket \
+  --bucket learn-devops-replica-YOURNAME-0009 \
+  --region us-east-1
+
+aws s3api put-bucket-versioning \
+  --bucket learn-devops-replica-YOURNAME-0009 \
+  --versioning-configuration Status=Enabled
+```
+
+CRR destination can be in any region. us-east-1 is a good choice — it's the oldest and most feature-complete region, and geographically distant from ap-southeast-1 for DR purposes.
+
+### 3. Get your AWS account ID
+
+```plain text
+aws sts get-caller-identity --query Account --output text
+```
+
+Save this — you'll need it for the IAM role trust policy and the replication configuration.
+
+### 4. Create the IAM role for replication
+
+S3 needs permission to read from source and write to destination. Create a trust policy file:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": { "Service": "s3.amazonaws.com" },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+```
+
+Then upload it using this code.
+
+```bash
+aws iam create-role \
+  --role-name s3-crr-role-0009 \
+  --assume-role-policy-document file://s3-crr-trust-policy.json
+```
+
+Now attach the permissions policy (replace `YOURNAME`):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+        "Sid": "SourceBucketPermissions",
+        "Effect": "Allow",
+        "Action": [
+            "s3:GetReplicationConfiguration",
+            "s3:ListBucket"
+        ],
+        "Resource": "arn:aws:s3:::learn-devops-source-vanpanugan-0009"
+    },
+    {
+      "Sid": "SourceObjectPermissions",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObjectVersionForReplication",
+        "s3:GetObjectVersionTagging",
+        "s3:GetObjectVersionAcl"
+      ],
+      "Resource": "arn:aws:s3:::learn-devops-source-vanpanugan-0009/*"
+    },
+    {
+      "Sid": "DestinationObjectPermissions",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ReplicateObject",
+        "s3:ReplicateDelete",
+        "s3:ReplicateTags"
+      ],
+      "Resource": "arn:aws:s3:::learn-devops-replica-vanpanugan-0009/*"
+    }
+  ]
+}
+```
+
+Run this code to put the policy.
+
+```bash
+aws iam put-role-policy \
+  --role-name s3-crr-role-0009 \
+  --policy-name s3-crr-permissions \
+  --policy-document file://s3-crr-permissions-policy.json
+```
+
+Save the role ARN. You can retrieve it with:
+
+```bash
+aws iam get-role --role-name s3-crr-role-0009 --query "Role.Arn" --output text
+```
+
+### 5. Create the replication configuration on the source bucket
+
+Create the `replication-config.json`.
+
+```json
+{
+  "Role": "PASTE_THE_ROLE_ARN",
+  "Rules": [
+    {
+      "ID": "CRR-AllObjects",
+      "Status": "Enabled",
+      "Priority": 1,
+      "Filter": { "Prefix": "" },
+      "DeleteMarkerReplication": { "Status": "Disabled" },
+      "Destination": {
+        "Bucket": "arn:aws:s3:::learn-devops-replica-YOURNAME-0009"
+      }
+    }
+  ]
+}
+```
+
+Then run this command:
+
+```bash
+aws s3api put-bucket-replication \
+  --bucket learn-devops-source-YOURNAME-0009 \
+  --replication-configuration file://replication-config.json
+```
+
+This tells S3: "replicate every object from this bucket to learn-devops-replica-YOURNAME-0009".
+
+### 6. Verify the replication configuration
+
+```bash
+aws s3api get-bucket-replication --bucket learn-devops-source-YOURNAME-0009
+```
+
+You should see your rule with `"Status": "Enabled"` and the destination bucket ARN.
+
+### 7. Upload objects to the source bucket
+
+Create 3 test files. Then upload it using this code codes:
+
+```bash
+aws s3 cp test1.txt s3://learn-devops-source-YOURNAME-0009/docs/test1.txt
+aws s3 cp test2.txt s3://learn-devops-source-YOURNAME-0009/docs/test2.txt
+aws s3 cp test3.txt s3://learn-devops-source-YOURNAME-0009/images/test3.txt
+```
+
+### 8. Verify objects appear in the destination bucket
+
+Wait ~30-60 seconds for replication to complete, then list the destination:
+
+```bash
+aws s3 ls s3://learn-devops-replica-YOURNAME-0009/docs/ --region us-east-1
+aws s3 ls s3://learn-devops-replica-YOURNAME-0009/images/ --region us-east-1
+```
+
+All three files should be present. Notice they appear in the same prefix structure (docs/ and images/) as the source — the key names are preserved exactly.
+
+### 9. Check replication status on source objects
+
+```bash
+aws s3api head-object \
+  --bucket learn-devops-source-YOURNAME-0009 \
+  --key docs/test1.txt \
+  --query "ReplicationStatus"
+```
+
+Should return `"COMPLETED"`. This confirms S3 has successfully replicated this specific object version.
+
+### 10. Upload a new version of an existing object (test overwrite)
+
+```bash
+@'updated test file one v2'@ | Out-File -Encoding UTF8 test1.txt
+aws s3 cp test1.txt s3://learn-devops-source-YOURNAME-0009/docs/test1.txt
+```
+
+Wait ~30 seconds, then check the destination:
+
+```bash
+aws s3api list-object-versions \
+  --bucket learn-devops-replica-YOURNAME-0009 \
+  --prefix docs/test1.txt \
+  --region us-east-1 \
+  --query "Versions[].{VersionId:VersionId,Size:Size}"
+```
+
+Both versions should appear in the destination. Replication preserves the version history.
+
+```json
+[
+    {
+        "VersionId": "pqxs40MXNlfrafeEEhuJSOWZOFZrKVTI",
+        "Size": 17
+    },
+    {
+        "VersionId": "mFWwwmBcHT.tJaw_n0z5JtioDTLstcyq",
+        "Size": 14
+    }
+]
+```
+
+### 11. Delete the source object — verify delete marker behavior
+
+Since we set `DeleteMarkerReplication: Disabled`, deleting the source shouldn't create a delete marker on the replica:
+
+```bash
+aws s3 rm s3://learn-devops-source-YOURNAME-0009/docs/test2.txt
+aws s3 ls s3://learn-devops-replica-YOURNAME-0009/docs/test2.txt --region us-east-1
+```
+
+test2.txt should still be accessible in the destination — the delete didn't replicate.
+
+### 12. Cleanup
+
+Empty both buckets first (versioned buckets require deleting all versions):
+
+```bash
+aws s3api list-object-versions --bucket learn-devops-source-YOURNAME-0009 --query '{"Objects": Versions[].{"Key": Key, "VersionId": VersionId}}' --output json | Out-File -Encoding ascii delete.json
+aws s3api delete-objects --bucket learn-devops-source-YOURNAME-0009 --delete file://delete.json
+aws s3api list-object-versions --bucket learn-devops-source-YOURNAME-0009 --query '{"Objects": DeleteMarkers[].{"Key": Key, "VersionId": VersionId}}' --output json | Out-File -Encoding ascii delete-markers.json
+aws s3api delete-objects --bucket learn-devops-source-YOURNAME-0009 --delete file://delete-markers.json
+
+aws s3api delete-bucket --bucket learn-devops-source-YOURNAME-0009
+
+
+aws s3api list-object-versions --bucket learn-devops-replica-YOURNAME-0009 --query '{"Objects": Versions[].{"Key": Key, "VersionId": VersionId}}' --output json | Out-File -Encoding ascii delete.json
+aws s3api delete-objects --bucket learn-devops-replica-YOURNAME-0009 --delete file://delete.json
+aws s3api list-object-versions --bucket learn-devops-replica-YOURNAME-0009 --query '{"Objects": DeleteMarkers[].{"Key": Key, "VersionId": VersionId}}' --output json | Out-File -Encoding ascii delete-markers.json
+aws s3api delete-objects --bucket learn-devops-replica-YOURNAME-0009 --delete file://delete-markers.json
+
+aws s3api delete-bucket --bucket learn-devops-replica-YOURNAME-0009
+
+aws iam delete-role-policy --role-name s3-crr-role-0009 --policy-name s3-crr-permissions
+aws iam delete-role --role-name s3-crr-role-0009
+```
+
+Cleaning up versioned buckets is more involved — you must delete every version of every object before S3 allows bucket deletion.
+
+> **Mission connection:** For your backup project, CRR is the disaster recovery foundation. Your database backups in ap-southeast-1 are automatically replicated to us-east-1. If ap-southeast-1 experiences a regional outage, your backups are safe in another continent. For your static site, SRR to a logging bucket in the same region separates content from audit data — useful for compliance without the latency of cross-region copies.
+
+# Replication Patterns and Use Cases
+
+| **Pattern** | **Type** | **Config** | **Real-world example** |
+| --- | --- | --- | --- |
+| DR replica | CRR | All objects, lower storage class at dest | Production bucket in us-east-1, replica in eu-west-1 on DEEP_ARCHIVE |
+| Log aggregation | SRR | Prefix filter on logs/ | Multiple app buckets replicate logs/ to a central logging bucket for analysis |
+| Multi-region serving | CRR | Two-way replication | Upload in Singapore, serve from Singapore and Frankfurt — users get the closest copy |
+| Compliance archive | CRR | Different account as dest, owner override | Financial data replicated to an auditor's account; they own the replicas |
+| Test data refresh | SRR | Prefix filter, replicate tags only | Copy prod data to a test bucket; scrub PII, run tests, discard when done |
+| Live migration | CRR/SRR | Batch Replication for existing + rule for new | Migrating from one account/region to another with zero downtime |
+
+# Primary Sources
+
+- [S3 User Guide — Replicating objects](https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication.html) (comprehensive overview)
+- [S3 User Guide — Replicating encrypted objects (SSE-KMS)](https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication-config-for-kms-objects.html)
+- [S3 User Guide — Replication Time Control](https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication-time-control.html)
+- [S3 User Guide — Batch Replication](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-batch-replication.html) (for replicating existing objects)
+- [S3 User Guide — Troubleshooting replication](https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication-troubleshoot.html)
