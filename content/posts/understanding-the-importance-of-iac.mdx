@@ -1,0 +1,145 @@
+---
+title: "Understanding the Importance of Infrastructure as Code(IaC)"
+slug: understanding-the-importance-of-iac
+description: "Learning AWS made me hit a wall: manual CLI setup was slow, error-prone, and painful to tear down. Here's how IaC fixes that — and how Terraform, AI, and MCP are changing how we write infrastructure."
+date: 2026-08-17
+tags: ["IaC", "Terraform", "AWS", "DevOps", "AI"]
+category: "DevOps"
+isDraft: false
+---
+
+In the past few weeks, I have been learning about AWS S3 using the AWS CLI and Go for backend development (Go-Chi). I learned a lot — from S3 Versioning and Static Site Hosting to CDN setup and more. However, I ran into several problems along the way. The first was the long process of scripting everything from creating a bucket to tearing it down. When I tested static website deployment on S3 with CloudFront, it took a lot of setup, and sometimes I could not get it right because of syntax errors, wrong JSON templates, and incorrect CLI commands. Cleaning up was also a hassle — it took a while, and I had to double-check everything to avoid leaving resources behind and paying for them later. In my Go project (FMIS-API), I also got stuck while designing its cloud infrastructure, mostly due to lack of experience and the complexity of the CLI.
+
+It made me realize how important Infrastructure as Code (IaC) is for automating the creation of infrastructure. In this article, I share what IaC is, why it matters, my experience with Terraform, and how AI and MCP are changing the way we write infrastructure.
+
+## What is IaC?
+
+Infrastructure as Code (IaC) is the practice of managing and provisioning cloud infrastructure using machine-readable definition files, instead of clicking through the AWS Console or typing long chains of ad-hoc CLI commands. You describe the infrastructure you want — S3 buckets, CloudFront distributions, IAM roles, databases — in code, just like application code.
+
+That code can be committed to version control, reviewed by teammates, and reused across environments. Instead of recreating an S3 bucket and a CloudFront distribution from memory every time, you write the configuration once and use it over and over.
+
+- Terraform (HashiCorp) — cloud-agnostic, works with AWS, GCP, Azure, and more
+- AWS CloudFormation — AWS-native IaC
+- Pulumi — IaC with general-purpose programming languages
+- Ansible — configuration management and provisioning
+
+These are the most common tools, but the idea is the same: infrastructure described as code, managed like code.
+
+## Why is it important?
+
+IaC solves the exact problems I hit while learning AWS:
+
+- **Repeatability** — the same code produces the same infrastructure every time. No more hoping you remembered every step.
+- **Version control** — infrastructure changes are tracked, reviewed, and rollback-able just like code changes.
+- **Fewer mistakes** — errors like wrong JSON templates or incorrect CLI flags are caught when the plan is validated, not when the bill arrives.
+- **Easy cleanup** — one command tears everything down, so you will never leave stray resources (and costs) behind.
+- **Faster learning** — you can experiment, break things, and destroy test environments safely.
+
+## Terraform?
+
+Terraform is an open-source IaC tool by HashiCorp and one of the most widely used in the industry. It is declarative: you describe the desired end state of your infrastructure, and Terraform figures out how to get there.
+
+- **Cloud-agnostic** — one workflow for AWS, GCP, Azure, and thousands of other providers.
+- **Plan/Apply workflow** — terraform plan previews changes before anything happens, and terraform apply only executes what the plan says.
+- **State tracking** — Terraform keeps a state file of all the resources it manages, so it knows exactly what to create, modify, or destroy.
+- **Destroy on demand** — terraform destroy removes every managed resource, making cleanup safe and simple.
+
+```hcl
+# main.tf — the same static site setup, in a few lines
+resource "aws_s3_bucket" "static_site" {
+  bucket = "my-static-site-bucket"
+}
+
+resource "aws_s3_bucket_website_configuration" "static_site" {
+  bucket = aws_s3_bucket.static_site.id
+
+  index_document {
+    suffix = "index.html"
+  }
+}
+```
+
+That is the kind of code that replaces dozens of CLI commands — and it can be shared, reviewed, and destroyed with a single terraform destroy.
+
+## Using IaC and AI?
+
+IaC and AI pair really well together. Because infrastructure is just text, an AI assistant can read, write, explain, and fix it. You can describe what you want — "an S3 bucket with a CloudFront distribution for a static site" — and the AI drafts the Terraform configuration for you.
+
+- **Generate** boilerplate configurations and modules in seconds.
+- **Debug** plan errors and explain unfamiliar resources.
+- **Review** configurations for security issues and cost.
+
+Of course, AI can be wrong. It might invent a resource that does not exist or write an insecure configuration. That is why the safety net matters: always run terraform plan, read the output, and apply only what you understand. AI speeds up the typing — you stay responsible for the results.
+
+## Hazards of AI in IaC
+
+AI-generated infrastructure is convenient, but it comes with a new class of failure: output that is syntactically valid, passes every automated check, and still breaks in production. Two articles shaped my view on this — [Vibe-Coded Infra Is Your New Reliability Hazard](https://hackernoon.com/vibe-coded-infra-is-your-new-reliability-hazard) by The Turtle Blogs, and [AI-Generated Terraform: Why IaC Security Fails](https://www.optimum-web.com/blog/ai-generated-terraform-kubernetes-misconfigurations/) by Optimum Web.
+
+**The numbers are sobering.**
+
+- In the IaC-Eval benchmark, GPT-4 solved only 19.36% of real-world AWS Terraform tasks on the first try — versus 86.6% on equivalent Python code. A 2026 follow-up (DPIaC-Eval) found just 8.4% of AI-generated IaC passes security policy checks.
+- Misconfigured IAM roles appear in nearly 50% of AI-assisted cloud deployments, and 41% of AI-generated code includes overly broad permissions.
+- AI-assisted developers commit 3-4x faster but introduce security findings at 10x the rate — security debt accumulates faster than teams can remediate it.
+- Real incidents: Amazon's Kiro assistant deleted a production environment (13-hour outage), and Claude Code ran `terraform destroy` on production, wiping 2.5 years of data.
+
+### Three ways AI-generated IaC breaks
+
+- **Hallucinated or deprecated fields** — the AI writes syntax from an older API version. It passes validation, gets silently ignored, and your workload misbehaves with no error logs.
+- **Over-permissive IAM by default** — LLMs gravitate toward `s3:*` on `*` instead of least-privilege ARNs. Everything works in testing; the blast radius is your whole account.
+- **Destructive operations without context** — an agent has no instinct for caution. "Clean up this environment" can mean `terraform destroy` on production.
+
+The uncomfortable part: `terraform validate` and `terraform plan` check syntax and state — not security posture. A configuration can pass both cleanly and still open a bucket to the internet.
+
+### How to protect yourself
+
+- Run policy-as-code scanners (Checkov, TFLint, tfsec, OPA/Gatekeeper) in CI as hard-fail gates — before apply, not after.
+- Validate against your actual versions — kubeconform for manifests, pinned provider versions for Terraform.
+- Lint IAM policies and treat least-privilege as the default; enable delete protection on critical resources.
+- Gate destructive commands behind explicit human approval — no `-auto-approve` for AI agents.
+- Review AI-generated changes like any other production change — with someone who understands the infrastructure.
+
+None of this means you should avoid AI for IaC. It means AI output needs its own validation layer before it reaches production.
+
+## MCP
+
+The Model Context Protocol (MCP) is an open standard that connects AI assistants to external tools and data. HashiCorp maintains terraform-mcp-server, which gives an AI assistant direct access to your Terraform workflow — reading state files, inspecting plans, and even applying changes.
+
+### Benefits of terraform-mcp-server
+
+- **Grounds the AI in real data** — it queries the actual Terraform Registry for providers, modules, and policies, instead of hallucinating versions and attributes from training data.
+- **Workspace control** — create and manage workspaces, variables, tags, and runs on HCP Terraform or Terraform Enterprise, all through your AI assistant.
+- **Safer by default** — tools that need explicit approval (plan, apply, destroy) stay disabled until you set `ENABLE_TF_OPERATIONS=true`, and you can filter exposed tools with `--toolsets` and `--tools`.
+- **Scoped access** — per-user token passthrough and organization allowlists give proper RBAC in centralized deployments.
+- **Observability** — OTel metrics show how often tools are called, along with latency and error counts.
+
+That said, it is a double-edged sword. As the README warns, never expose the server to untrusted MCP clients, and review every output before implementing it. And remember the earlier article's finding: 15% of remote MCP servers allow unauthenticated access — if you run this server remotely, TLS, organization allowlists, and rate limits are mandatory.
+
+With MCP, an AI assistant does not just suggest code anymore — it can look at your actual infrastructure, run a plan, and show you exactly what would change. You review, it acts. That makes it a huge learning accelerator: the AI becomes a guided pair-programmer for your infrastructure.
+
+## Reflection (Learning Terraform for AWS)
+
+Looking back at my S3 + CloudFront static site deployment, Terraform would have solved most of my pain. The whole setup would fit in a few files, terraform plan would have caught my mistakes before they happened, and terraform destroy would have removed all fear of leftover resources. I am now learning Terraform for AWS with these goals:
+
+- **Recreate the FMIS-API infrastructure** with Terraform — reproducible, documented, and safe to destroy.
+- **Understand the state file** and how Terraform tracks what it manages.
+- **Use variables and modules** to keep configurations clean and reusable.
+- **Always read the plan** before applying, even when an AI generated it.
+- **Experiment with MCP** so AI can inspect and plan my infrastructure under my supervision.
+
+IaC turned my biggest frustration — manual, error-prone cloud setup — into a skill I actually enjoy learning. If you are starting with AWS or any cloud, skip the click-and-hope phase: learn IaC early, and let AI help you learn it faster.
+
+## Further Reading
+
+Articles I found helpful for preventing hazards, security debt, and technical debt when using AI for IaC development:
+
+- [Balancing speed and safety: A control framework for AI coding agents](https://aws.amazon.com/blogs/security/balancing-speed-and-safety-a-control-framework-for-ai-coding-agents/) — AWS Security Blog
+- [When AI Operates Your Infrastructure: Why Every Control Must Be Structural](https://www.qualitax.io/blog/ai-infrastructure-structural-controls) — QualitaX
+- [Using Terraform with AI: Workflows, Tools & Security](https://spacelift.io/blog/terraform-ai) — Spacelift
+- [AI is Writing More of Your Terraform](https://www.sonarsource.com/blog/ai-is-writing-more-of-your-terraform/) — Sonar
+- [Why AI-Generated Terraform and Kubernetes Configs Are Silently Wrong](https://tianpan.co/blog/2026-05-06-ai-generated-iac-terraform-kubernetes-failure-modes) — Tian Pan
+- [Policy-as-Code for Terraform with OPA and Conftest on the Plan JSON](https://kloudvin.com/article/opa-conftest-terraform-plan-policy-gates/) — KloudVin
+- [Guardrails for AI-Generated IaC: How MyCoCo Made Speed Sustainable](https://www.mycloudcondo.com/ai-iac-guardrails.html) — MyCloudCondo
+- [Security model for Terraform MCP server](https://developer.hashicorp.com/terraform/mcp-server/security) — HashiCorp Developer
+- [AI-assisted development governance: A practical guide](https://blog.logrocket.com/ai-development-governance-practical-guide/) — LogRocket
+- [How to Manage Technical Debt In The AI Era](https://sunbytes.io/blog/software-development/how-to-manage-technical-debt-in-ai-era/) — Sunbytes
+- [Managing AI-Generated Technical Debt: A Practical Framework for Teams Shipping with Copilot and Claude](https://letsbuildsolutions.com/blog/engineering-management/managing-ai-generated-technical-debt-a-practical-framework-for-teams-shipping-with-copilot-and-claude/) — Let's Build
