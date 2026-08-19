@@ -42,6 +42,9 @@ yarn-error.log*
 # velite
 /.velite
 
+# playwright mcp artifacts
+/.playwright-mcp/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

@@ -1,0 +1,491 @@
+---
+title: "JWT, Authentication vs Authorization, and RBAC: Securing a Food Factory API"
+slug: jwt-authentication-vs-authorization-and-rbac
+description: "What building a food manufacturing inventory system taught me about the difference between authentication and authorization, how JWT works at the byte level, and how RBAC turns roles into 403s."
+date: 2026-08-20
+tags: ["JWT", "Authentication", "Authorization", "RBAC", "Go", "Security"]
+category: "Cybersecurity"
+isDraft: false
+---
+
+When I started building the backend for my Food Manufacturing Inventory System (FMIS-API), the auth module was the part I kept avoiding. Sessions or tokens? What is a "Bearer" header, actually? And why do people keep writing `401` when they mean `403`?
+
+It turns out every one of those questions has a crisp, satisfying answer once you sit down with the actual specs. In this post I'm sharing what I learned while implementing JWT authentication and role-based access control in Go — the exact difference between authentication and authorization, how JWT works at the byte level, how RBAC turns roles into `403`s, and the industry practices that separate toy auth from production auth.
+
+## The difference that starts it all: Authentication vs Authorization
+
+Most confusion around auth disappears once you separate these two. They happen in a strict order and answer different questions:
+
+| | Authentication | Authorization |
+| --- | --- | --- |
+| Question it answers | **Who are you?** | **What may you do?** |
+| English meaning | Prove identity | Check permissions |
+| Happens when | Before anything else | After identity is proven |
+| HTTP failure status | `401 Unauthorized` | `403 Forbidden` |
+| Fails with | missing / expired / invalid token | valid token, wrong role |
+
+A mental model that stuck with me is a castle. The front gate has a guard who asks **"Who are you?"** — you show your photo ID (a JWT), he checks the official seal (signature) and the expiry date. Fake, expired, or missing card, and you're turned away at the door. He never asks what you want to do.
+
+Once you're inside, every floor has its own guard who asks **"What does your badge allow you to do here?"** A Visitor badge can only look. A Worker badge can move crates. A Manager badge can do everything. Badge not allowed here means no entry — even though you got past the gate.
+
+The cheat memory: `401` = "I don't know who you are." `403` = "I know exactly who you are, and you're still not allowed." You can be fully authenticated and still not authorized: a Viewer *is* logged in (authenticated ✓) but cannot delete products (authorized ✗).
+
+## Why HTTP needs credentials on every request
+
+HTTP is stateless. Think of a restaurant waiter with amnesia — ask for water at 7:00 and dessert at 7:30, and he has no idea you're the same person. The server forgets you between requests. There is no built-in "logged in" state, only: *a request arrives with a credential attached, and the server checks that credential — every single time.*
+
+To recognize repeat customers, the web has two approaches:
+
+| | Sessions | Tokens (JWT) |
+| --- | --- | --- |
+| Where does the info live? | Server-side store (DB / Redis) | Inside the token itself (client holds it) |
+| How does the server recognize you? | Looks up your session ID in the store | Verifies the token's signature — no lookup |
+| Scaling | Store grows with every logged-in user | Stateless: any server instance can verify |
+| Revocation (kick someone out) | Easy: delete the session row | Hard: token stays valid until it expires |
+
+FMIS-API uses **both** — and that's the industry-standard combo: a short-lived stateless JWT (the access token) so the server never needs a DB lookup per request, plus a server-side stored refresh token so you can still revoke sessions.
+
+The credential travels in the `Authorization` header on every request:
+
+```plaintext
+GET /api/v1/products/ HTTP/1.1
+Host: api.example.com
+Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoi...2e0Lx2ZIz2
+```
+
+The word **Bearer** means "whoever holds this token IS the person." It's a magic word the server looks for. Anyone who possesses the token can use it — which is why you protect it like a credit card.
+
+On the server side (Go), reading that header is a one-liner:
+
+```go
+// internal/middleware/auth.go — reading the header server-side
+header := r.Header.Get("Authorization")
+token, ok := strings.CutPrefix(header, "Bearer ")
+if !ok || token == "" {
+    w.WriteHeader(http.StatusUnauthorized)
+    return
+}
+```
+
+`strings.CutPrefix` is Go's way of saying "if the string starts with `Bearer `, strip it off." `ok` is `false` when the header is missing, isn't a Bearer token, or is empty — in every case the server answers **401 before doing anything else**.
+
+## 401 vs 403: the two most confused status codes in existence
+
+- **401 Unauthorized** — "I don't know who you are." No token, malformed token, expired token, bad signature. Fix: log in again. Fun fact: the name is historically wrong — it should be "Unauthenticated." But 401 is forever.
+- **403 Forbidden** — "I know exactly who you are, and you're not allowed." Token is perfectly valid, but your role isn't in the endpoint's allowed set. Fix: ask for a different role. Never retry the same request.
+
+**Order matters:** the 401 check always runs first. A request can never get a 403 unless it first passed authentication. The request lifecycle looks like this:
+
+```plaintext
+                 request
+                    |
+                    v
+        +-------------------------+
+        |  CORS, Logging, etc.    |   (infrastructure)
+        +-------------------------+
+                    |
+                    v
+        +-------------------------+   AUTHENTICATION: "who are you?"
+        |   Auth middleware       |
+        |   (auth.go)             |
+        +-------------------------+
+            | valid               | invalid
+            v                     v
+  +----------------------+      401 Unauthorized
+  | RequireRole          |      (stop here — no handler runs)
+  | (rbac.go)            |
+  +----------------------+
+      | allowed            | not allowed
+      v                    v
+  +--------------+       403 Forbidden
+  |   handler    |       (stop here)
+  | (your route) |
+  +--------------+
+```
+
+Quick scenario check — what status do you get?
+
+- No token at all → **401**
+- Token expired (15 minutes passed) → **401**
+- Valid ADMIN token on `GET /api/v1/products/` → **200**
+- Valid VIEWER token on `POST /api/v1/products/` → **403**
+- Token with a tampered payload (signature no longer matches) → **401**
+- Forged token signed with a wrong secret → **401**
+
+Here's the two middlewares in this repo, side by side:
+
+```go
+// internal/middleware/auth.go — AUTHENTICATION (answers 401)
+func Auth(secret string) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            header := r.Header.Get("Authorization")
+            token, ok := strings.CutPrefix(header, "Bearer ")
+            if !ok || token == "" {
+                w.WriteHeader(http.StatusUnauthorized)
+                return
+            }
+            claims := &Claims{}
+            parsed, err := jwt.ParseWithClaims(token, claims,
+                func(t *jwt.Token) (any, error) {
+                    if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+                        return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+                    }
+                    return []byte(secret), nil
+                },
+                jwt.WithValidMethods([]string{"HS256"}),
+                jwt.WithExpirationRequired(),
+            )
+            if err != nil || !parsed.Valid {
+                w.WriteHeader(http.StatusUnauthorized)
+                return
+            }
+            ctx := context.WithValue(r.Context(), ctxKeyUserID, claims.UserID)
+            ctx = context.WithValue(ctx, ctxKeyRole, claims.Role)
+            next.ServeHTTP(w, r.WithContext(ctx))
+        })
+    }
+}
+```
+
+Notice what `Auth` does after verifying: it writes `user_id` and `role` **into the request context** and calls `next`. From this point on, downstream code (RBAC, handlers, services) can read who you are without re-checking the token.
+
+```go
+// internal/middleware/rbac.go — AUTHORIZATION (answers 403)
+func RequireRole(allowed ...models.UserRoleType) func(http.Handler) http.Handler {
+    set := make(map[models.UserRoleType]struct{}, len(allowed))
+    for _, r := range allowed {
+        set[r] = struct{}{}
+    }
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            role := models.UserRoleType(RoleFromContext(r.Context()))
+            if _, ok := set[role]; !ok {
+                w.WriteHeader(http.StatusForbidden)
+                return
+            }
+            next.ServeHTTP(w, r)
+        })
+    }
+}
+```
+
+`RequireRole` reads the role **out of the context** (written by `Auth`), converts it to the `UserRoleType` defined type, and looks it up in the allowed set. Not in the set → 403. This is a pure authorization decision — it never inspects the token itself.
+
+**Common mistakes (real bugs people ship):**
+
+- Returning **403 for missing tokens** — should be 401. Clients treat 403 as "never retry," so a simple expiry silently breaks every screen.
+- **Hiding buttons instead of enforcing** — hiding the Delete button in the UI is *not* security. Anyone can curl the endpoint. Enforcement must live server-side.
+- **Inline role checks in 20 handlers** (`if user.Role != "ADMIN"`) — drift guaranteed. Middleware centralizes the policy in one place.
+
+## JWT — the deep dive
+
+A JWT is a **JSON Web Token**: a compact, URL-safe string that carries a JSON payload (your claims) and a cryptographic **signature** proving the payload wasn't tampered with. Think of it as a letter with a wax seal — anyone can open and read it, but nobody can alter it without breaking the seal.
+
+The critical mental model: **a JWT is NOT encrypted.** The middle part is base64 — trivial to decode. A JWT's security comes entirely from the signature, not from hiding the content. **NEVER put a password, secret, or personal data in a JWT.**
+
+### Anatomy: header.payload.signature
+
+```plaintext
+JWT =  <header> . <payload> . <signature>
+
+eyJhbGciOiJIUzI1NiJ9 . eyJ1c2VyX2lkIjoi... . sQ0S6Hx4d...
+
+   |                          |                    |
+   |                          |                    +-- signature: HMAC-SHA256(secret, header.payload)
+   |                          |                        = the "wax seal"
+   |                          +-- payload: your claims (user_id, role, exp, iat)
+   +-- header: {"alg":"HS256","typ":"JWT"} — which algorithm made the seal
+```
+
+Each part is **base64url-encoded** — base64 with `-` and `_` instead of `+` and `/`, and no `=` padding. That's what makes the token URL-safe (it travels in headers and URLs).
+
+And yes, you can decode the payload right in your browser:
+
+```javascript
+// Decode a JWT payload client-side (NO verification — just base64!)
+function decodeJwtPayload(token) {
+  const [, payload] = token.split('.');
+  const base64 = payload.replace(/-/g, '+').replace(/_/g, '/');
+  return JSON.parse(atob(base64));
+}
+
+console.log(decodeJwtPayload(access_token));
+// { user_id: "d2f9...-uuid", role: "OPERATOR", exp: 1787145012, iat: 1787144112 }
+```
+
+There is no magic — the payload is readable by anyone who has the token. **The signature is the ONLY thing stopping someone from editing `role` to `ADMIN` and sending it back.**
+
+### Claims — what we put inside
+
+- **Registered claims** (standard, defined by RFC 7519): `sub` (subject — who the token is about), `iss` (issuer), `aud` (audience), `exp` (expiration time), `iat` (issued at), `nbf` (not before).
+- **Public / private claims** (your own): anything you want — but keep it small. Our repo stores `user_id` and `role`.
+
+```go
+// internal/middleware/auth.go — our custom claims
+type Claims struct {
+    UserID string `json:"user_id"`
+    Role   string `json:"role"`
+    jwt.RegisteredClaims // embeds exp, iat, sub, etc.
+}
+```
+
+Embedding `jwt.RegisteredClaims` gives us `exp`, `iat`, `sub`, etc. for free — the library knows how to parse and validate them. `user_id` and `role` ride along as our own claims.
+
+### How HS256 signing works (the math, in plain words)
+
+```plaintext
+signature = HMAC-SHA256( secret, "<header>.<payload>" )
+
+  header = {"alg":"HS256","typ":"JWT"}   (base64url-encoded)
+  payload = {user_id, role, exp, iat}    (base64url-encoded)
+
+To VERIFY, the server:
+  1. splits the token into 3 parts
+  2. recomputes HMAC-SHA256(secret, part1.part2)
+  3. compares with part3
+  match  -> the payload is EXACTLY what the server signed -> trust it
+  no match -> someone changed header/payload after signing -> reject (401)
+```
+
+HS256 is **symmetric**: the same secret signs AND verifies. That means only parties holding the secret can verify — the API server keeps `JWT_SECRET` private. (RS256, the asymmetric alternative, is what you'd reach for across multiple services.)
+
+### Issuing a token
+
+After a successful login or registration, the server signs the claims with the secret and hands the string to the client:
+
+```go
+// internal/services/auth.go
+func (s *AuthService) issueAccessToken(user *models.User) (string, error) {
+    claims := middleware.Claims{
+        UserID: user.ID.String(),
+        Role:   string(user.Role),
+        RegisteredClaims: jwt.RegisteredClaims{
+            Subject:   user.ID.String(),
+            IssuedAt:  jwt.NewNumericDate(time.Now()),
+            ExpiresAt: jwt.NewNumericDate(time.Now().Add(s.accessTTL)), // 15m
+        },
+    }
+    return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(s.jwtSecret)
+}
+```
+
+**The client can't forge its own — it doesn't know the secret.** And because JWT is a standard, any JWT library in any language can read any other language's tokens, as long as they share the secret and algorithm. A Node.js client issuing the same token looks like this:
+
+```javascript
+const jwt = require('jsonwebtoken');
+
+function issueAccessToken(user) {
+  return jwt.sign(
+    { user_id: user.id, role: user.role },  // private claims
+    process.env.JWT_SECRET,                  // secret (never commit this!)
+    {
+      algorithm: 'HS256',
+      subject: user.id,
+      expiresIn: '15m',                      // exp = now + 15 minutes
+    }
+  );
+}
+```
+
+### Why tokens die: `exp`
+
+The `exp` claim is a Unix timestamp: "this token stops being valid at this moment." The library checks it during verification. FMIS sets it to **15 minutes**. Why 15 minutes? A stolen token is only useful while it's valid — the shorter the lifetime, the smaller the attack window. The cost: users must re-authenticate every 15 minutes... unless we add refresh tokens.
+
+## The two-key system: access tokens + refresh tokens
+
+Here's the tension: short tokens are safer but annoying. Long tokens are convenient but dangerous. The industry answer: **two tokens.**
+
+| | Access token | Refresh token |
+| --- | --- | --- |
+| Purpose | Prove who you are on every request | Get a NEW access token when the old one dies |
+| Format | JWT (stateless, signed) | Opaque random string (64 hex chars in FMIS) |
+| Lifetime | 15 minutes | 7 days |
+| Stored server-side? | No — verified by signature | Yes — SHA-256 hash in `refresh_tokens` table |
+| Sent with every request? | Yes (`Authorization` header) | No — only to `/auth/refresh` |
+| Can it be revoked? | Not directly (stateless) | Yes — mark revoked in DB (logout!) |
+
+The flow:
+
+```plaintext
+                +----------+
+                |  LOGIN   |  POST /api/v1/auth/login
+                +----+-----+
+                     | credentials OK
+                     v
+        +---------------------------+
+        | access token (JWT, 15m)   |--> client stores it (memory/cookie)
+        | refresh token (raw, 7d)   |--> client stores it (httpOnly cookie)
+        +---------------------------+
+                     |
+          +----------+-----------+
+          |                      |
+    request with access      access expires (401)
+    token -> 200               |
+                              v
+                    +-----------------+
+                    |  POST /auth/    |  send ONLY the refresh token
+                    |  refresh        |
+                    +--------+--------+
+                             | server: hash(refresh) -> look up in DB
+                             | not revoked? not expired? -> rotate it
+                             v
+              +----------------------------+
+              | new access token (15m)     |
+              | new refresh token (rotated)|
+              +----------------------------+
+```
+
+### Refresh tokens done the safe way
+
+- **Raw token never stored.** `newRefreshToken()` generates 32 random bytes → hex (64 chars). The DB stores only `sha256(raw)`. If the DB leaks, the attacker gets hashes — useless without the raw token. Same logic as bcrypt for passwords (refresh tokens are high-entropy, so plain SHA-256 is enough — unlike passwords).
+- **Rotation on every refresh:** `Refresh()` revokes the old token and issues a new one inside **one transaction**. A stolen refresh token is therefore usable at most once before the honest client's next refresh invalidates it (reuse detection).
+- **Logout = revoke:** `Logout()` flips `revoked = true` in the DB. The access token still lives its 15 minutes, but no new tokens can be minted.
+
+### Storage best practices (where the client keeps tokens)
+
+- **Access token → in memory** (JS variable) or a short-lived in-memory store. Not localStorage: any XSS can read it.
+- **Refresh token → HttpOnly + Secure + SameSite=Strict cookie**, sent only to `/auth/refresh`. HttpOnly means JavaScript can't touch it → XSS can't steal it.
+- **Never in** localStorage/sessionStorage for a token that lasts days. One bad `innerHTML` = account gone.
+
+### JWT security pitfalls (each one is a real CVE)
+
+- **`alg=none`**: header says `{"alg":"none"}` and the signature is empty. If the server trusts the header's alg, the attacker signs their own payload by signing nothing. Mitigation: never trust the header — pin algorithms (`jwt.WithValidMethods`, `algorithms: ['HS256']`).
+- **Algorithm confusion (RS256→HS256):** the server verifies RS256 with a public key; the attacker re-signs with HS256 using that public key as the "secret." Mitigation: pin the algorithm list and validate the key type.
+- **Secrets in the payload:** remember — the payload is readable base64. Never put passwords, API keys, or PII in a JWT.
+- **Huge / long-lived tokens:** every byte is sent on every request. Keep the payload small; keep `exp` short.
+- **No expiry:** a token that never dies can't be revoked → permanent access for anyone who ever copies it. `jwt.WithExpirationRequired()` enforces this.
+- **Secret rotation ignored:** if `JWT_SECRET` leaks, every token ever issued is forgeable. Store secrets in env/Secrets Manager, rotate periodically, support multiple keys with the `kid` header claim.
+- **Token in a URL query string:** URLs end up in logs, browser history, and referrers. Header or cookie only.
+
+## RBAC — Role-Based Access Control
+
+Now the authorization half. RBAC's insight is that the factory gives you a **badge with a color**: green = Visitor, blue = Worker, gold = Manager. The color decides what you may do — you don't get a separate rule per person. "Worker can move crates" is written once on the badge; the moment someone gets a blue badge, all crate-moving permissions come with it. **Permissions attach to roles, users attach to roles.**
+
+Formally (this is the NIST standard model):
+
+- **Users** — the accounts calling the API (rows in the `users` table).
+- **Roles** — named job functions: `ADMIN`, `OPERATOR`, `VIEWER` (the `UserRoleType` enum in models.go).
+- **Permissions** — the right to do one operation: "create product", "consume inventory", "cancel production".
+- **Assignments** — two relations: *user→role* (who holds the badge) and *role→permission* (what the badge allows). Permissions are NEVER granted directly to a user.
+
+```plaintext
+  USERS                ROLES              PERMISSIONS (endpoints)
++----------+        +----------+        +--------------------------+
+| alice    |--+     | ADMIN    |--+     | POST /products  (create) |
+| bob      |--+---> | OPERATOR |--+---> | DELETE /products         |
+| carol    |--+     | VIEWER   |--+     | POST /inventory/consume  |
++----------+        +----------+        | GET  /batches (read)    |
+    user-role         role-permission   +--------------------------+
+    assignment        assignment
+```
+
+In FMIS, the *role→permission* mapping is the **endpoint-role matrix** in the design doc: every route carries its allowed roles. The *user→role* mapping is the `role` column in the `users` table — and it's also embedded in the JWT so the middleware never needs a DB hit.
+
+### Why roles and not per-user permissions?
+
+- 1,000 users × 20 endpoints = 20,000 direct grants to maintain per-user. With roles: 3 rows of policy + 1,000 assignments.
+- Promoting someone = changing one value (`role = ADMIN`). With per-user grants you'd edit that user's 20 permissions *and* their self-promotion permission.
+- Policy changes are centralized: "OPERATOR may no longer delete batches" = one matrix edit, instant for everyone with that role. **Policy and membership are separated — that separation is the entire point of RBAC.**
+
+For contrast, here's where RBAC sits next to the other models:
+
+| Model | Grants | Scales with | Example | When to use |
+| --- | --- | --- | --- | --- |
+| ACL (Access Control List) | per-user, per-resource | users × resources | "alice may edit file A" | documents, files |
+| RBAC | per-role | users × roles + roles × perms | "OPERATOR may consume inventory" | most business APIs |
+| ABAC (attribute-based) | per-attribute rules | attributes (dept, time, location) | "staff from Dept X, after 6pm, may cancel" | fine-grained, regulated systems |
+
+RBAC was the sweet spot for FMIS: three clean roles, a reviewable matrix, and simple reasoning ("which roles may call this route?"). ABAC would have been over-engineering.
+
+### The role matrix
+
+| Role | Products | Batches | Inventory | Production | Users |
+| --- | --- | --- | --- | --- | --- |
+| ADMIN | Full | Full | Full | Full | Full |
+| OPERATOR | Create only | Full | Full | Full | Read self |
+| VIEWER | Read only | Read only | Read only | Read only | Read self |
+
+And the endpoint annotations come in three shapes: `` `[ALL]` `` = any authenticated user (still needs a token! not public), `` `[ADMIN, OPERATOR]` `` = either role suffices (an allow-set, not a rank), `` `[ADMIN]` `` = privileged / destructive.
+
+- `GET /api/v1/products/` → `[ALL]` — browsing the catalog
+- `POST /api/v1/products/` → `[ADMIN, OPERATOR]` — creating products
+- `PATCH /api/v1/products/{id}` / `DELETE /api/v1/products/{id}` → `[ADMIN]` — editing/deleting the catalog
+- `POST /api/v1/inventory/consume` → `[ADMIN, OPERATOR]` — FEFO consumption
+- `POST /api/v1/production/{id}/cancel` → `[ADMIN]` — cancelling orders (expensive, irreversible)
+
+There is **no role hierarchy** here — VIEWER is not a mini-OPERATOR. The guard compares against an allow-set, not a rank. That's why `RequireRole` is variadic.
+
+### Wiring the matrix to routes
+
+```go
+// internal/routers/... — how the matrix becomes real enforcement
+r.Group(func(r chi.Router) {
+    r.Use(middleware.Auth(jwtSecret)) // identity for the whole group
+
+    // [ALL] — authenticated, no role guard
+    r.Get("/api/v1/products/", listProducts)
+
+    // [ADMIN, OPERATOR]
+    r.With(middleware.RequireRole(models.UserRoleTypeAdmin, models.UserRoleTypeOperator)).
+        Post("/api/v1/products/", createProduct)
+
+    // [ADMIN] only
+    r.With(middleware.RequireRole(models.UserRoleTypeAdmin)).
+        Delete("/api/v1/products/{product_id}", deleteProduct)
+})
+```
+
+`r.With(mw)` applies middleware to ONE route; `r.Use(mw)` applies to the whole group. Every route's annotation from the design doc becomes one visible line of wiring — a reviewer can diff the code against the matrix line by line. **A route with no guard is fail-open — the one mistake RBAC can't forgive.**
+
+And on the client, RBAC looks like this — but remember, this is **UX, not security**:
+
+```javascript
+// React-ish example: hide what the user can't do (UX only!)
+const ROLE_ACTION = {
+  VIEWER:   { create: false, edit: false, delete: false },
+  OPERATOR: { create: true,  edit: false, delete: false },
+  ADMIN:    { create: true,  edit: true,  delete: true },
+};
+
+function ProductActions({ user }) {
+  const actions = ROLE_ACTION[user.role] || {};
+  return (
+    <div>
+      {actions.create && <button>New product</button>}
+      {actions.delete && <button>Delete</button>}
+    </div>
+  );
+}
+```
+
+A user can still `fetch('DELETE /api/v1/products/x')` manually and the server will decide. The UI is a suggestion; the middleware is the law.
+
+### The principles RBAC exists to serve
+
+- **Least privilege** — grant the minimum needed for the job. If a VIEWER account is compromised, the attacker can only read. In FMIS, destructive ops are ADMIN-only.
+- **Default deny (fail-closed)** — unknown role or missing guard → deny. Wrong allow = data loss; wrong deny = one annoyed user. Deny wins.
+- **Separation of duties** — the person who receives a batch (OPERATOR) shouldn't also be the only person who can adjust inventory losses (ADMIN). Roles separate conflicting responsibilities.
+- **Defense in depth** — RBAC is one layer: middleware + validation + transactions + audit logs. Compromise one layer, the others hold.
+- **Auditability** — "who did what" = identity (auth) + permission (RBAC) + the transaction log. Food-safety compliance (HACCP / SOC 2-style) demands this chain.
+
+## Common attacks & mitigations (know your enemy)
+
+| Attack | What happens | Mitigation |
+| --- | --- | --- |
+| Token theft (XSS) | JS reads the token from localStorage; attacker's script exfiltrates it | HttpOnly cookies; short TTL; in-memory access tokens |
+| CSRF | Browser auto-sends cookies with requests; attacker's site triggers state changes | SameSite=Strict cookies; CSRF tokens; header-based Bearer auth is immune |
+| Replay | Attacker re-sends a captured request (e.g., consume inventory twice) | Short TTL; nonce; idempotency keys on mutations; audit logs |
+| `alg=none` | Header declares no signature; server trusts the header | Pin algorithms; never accept 'none' |
+| Algorithm confusion | RS256→HS256 re-sign with the public key | Pin the algorithm list; validate the key type |
+| Brute-force login | Script guesses passwords | Rate limiting; bcrypt cost; lockout |
+| Refresh token theft | Attacker replays a stolen refresh token | Rotation + reuse detection → revoke the whole family |
+| Secret leak (repo/env) | Anyone with `JWT_SECRET` forges ADMIN tokens | Secrets Manager; rotation; never commit; kid-based multi-key |
+| Session fixation | Attacker sets the victim's token | Always rotate on login/refresh |
+| Account enumeration | Login says "user not found" | Generic errors ("invalid credentials") |
+
+## Wrapping up
+
+Building the auth module for FMIS-API taught me that the pieces that look mysterious from the outside are refreshingly simple once separated: authentication proves who you are, authorization decides what you may do, a JWT is just a signed envelope (not a vault), and RBAC is a two-row relationship that keeps policy reviewable. The hard part isn't understanding any single piece — it's keeping the 401s and 403s honest, pinning the algorithms, hashing the refresh tokens, and never trusting the client to enforce anything.
+
+If you're implementing auth for the first time, start there: nail the ordering (authenticate before authorize), keep the tokens short, rotate the refresh tokens, and fail closed. Everything else is defense in depth on top of a solid foundation.
