@@ -22,6 +22,7 @@ const posts = defineCollection({
         "AWS"
       ]),
       isDraft: s.boolean().default(false),
+      featured: s.boolean().default(false),
       content: s.mdx(),
     })
     .transform((data) => {
