@@ -6,6 +6,7 @@ date: 2026-08-20
 tags: ["JWT", "Authentication", "Authorization", "RBAC", "Go", "Security"]
 category: "Cybersecurity"
 isDraft: false
+featured: true
 ---
 
 When I started building the backend for my Food Manufacturing Inventory System (FMIS-API), the auth module was the part I kept avoiding. Sessions or tokens? What is a "Bearer" header, actually? And why do people keep writing `401` when they mean `403`?
@@ -27,6 +28,8 @@ Most confusion around auth disappears once you separate these two. They happen i
 A mental model that stuck with me is a castle. The front gate has a guard who asks **"Who are you?"** — you show your photo ID (a JWT), he checks the official seal (signature) and the expiry date. Fake, expired, or missing card, and you're turned away at the door. He never asks what you want to do.
 
 Once you're inside, every floor has its own guard who asks **"What does your badge allow you to do here?"** A Visitor badge can only look. A Worker badge can move crates. A Manager badge can do everything. Badge not allowed here means no entry — even though you got past the gate.
+
+![The castle: the gate guard is authentication (401), the floor guards are authorization (403), and the JWT is your photo ID.](/assets/blog_assets/blog_13/castle-diagram.png)
 
 The cheat memory: `401` = "I don't know who you are." `403` = "I know exactly who you are, and you're still not allowed." You can be fully authenticated and still not authorized: a Viewer *is* logged in (authenticated ✓) but cannot delete products (authorized ✗).
 
@@ -76,32 +79,7 @@ if !ok || token == "" {
 
 **Order matters:** the 401 check always runs first. A request can never get a 403 unless it first passed authentication. The request lifecycle looks like this:
 
-```plaintext
-                 request
-                    |
-                    v
-        +-------------------------+
-        |  CORS, Logging, etc.    |   (infrastructure)
-        +-------------------------+
-                    |
-                    v
-        +-------------------------+   AUTHENTICATION: "who are you?"
-        |   Auth middleware       |
-        |   (auth.go)             |
-        +-------------------------+
-            | valid               | invalid
-            v                     v
-  +----------------------+      401 Unauthorized
-  | RequireRole          |      (stop here — no handler runs)
-  | (rbac.go)            |
-  +----------------------+
-      | allowed            | not allowed
-      v                    v
-  +--------------+       403 Forbidden
-  |   handler    |       (stop here)
-  | (your route) |
-  +--------------+
-```
+![The request lifecycle: infrastructure middleware, then the auth gate (401 on failure), then the role guard (403 on failure), then the handler.](/assets/blog_assets/blog_13/request-lifecycle.png)
 
 Quick scenario check — what status do you get?
 
@@ -186,17 +164,7 @@ The critical mental model: **a JWT is NOT encrypted.** The middle part is base64
 
 ### Anatomy: header.payload.signature
 
-```plaintext
-JWT =  <header> . <payload> . <signature>
-
-eyJhbGciOiJIUzI1NiJ9 . eyJ1c2VyX2lkIjoi... . sQ0S6Hx4d...
-
-   |                          |                    |
-   |                          |                    +-- signature: HMAC-SHA256(secret, header.payload)
-   |                          |                        = the "wax seal"
-   |                          +-- payload: your claims (user_id, role, exp, iat)
-   +-- header: {"alg":"HS256","typ":"JWT"} — which algorithm made the seal
-```
+![The anatomy of a JWT: header.payload.signature, where the header names the algorithm, the payload holds your claims, and the HMAC-SHA256 signature is the wax seal.](/assets/blog_assets/blog_13/jwt-anatomy.png)
 
 Each part is **base64url-encoded** — base64 with `-` and `_` instead of `+` and `/`, and no `=` padding. That's what makes the token URL-safe (it travels in headers and URLs).
 
@@ -307,34 +275,7 @@ Here's the tension: short tokens are safer but annoying. Long tokens are conveni
 
 The flow:
 
-```plaintext
-                +----------+
-                |  LOGIN   |  POST /api/v1/auth/login
-                +----+-----+
-                     | credentials OK
-                     v
-        +---------------------------+
-        | access token (JWT, 15m)   |--> client stores it (memory/cookie)
-        | refresh token (raw, 7d)   |--> client stores it (httpOnly cookie)
-        +---------------------------+
-                     |
-          +----------+-----------+
-          |                      |
-    request with access      access expires (401)
-    token -> 200               |
-                              v
-                    +-----------------+
-                    |  POST /auth/    |  send ONLY the refresh token
-                    |  refresh        |
-                    +--------+--------+
-                             | server: hash(refresh) -> look up in DB
-                             | not revoked? not expired? -> rotate it
-                             v
-              +----------------------------+
-              | new access token (15m)     |
-              | new refresh token (rotated)|
-              +----------------------------+
-```
+![The two-key system: login issues an access token and a refresh token; when the access token expires, the client sends only the refresh token to /auth/refresh, which rotates it and mints a new pair.](/assets/blog_assets/blog_13/token-flowchart.png)
 
 ### Refresh tokens done the safe way
 
@@ -369,16 +310,7 @@ Formally (this is the NIST standard model):
 - **Permissions** — the right to do one operation: "create product", "consume inventory", "cancel production".
 - **Assignments** — two relations: *user→role* (who holds the badge) and *role→permission* (what the badge allows). Permissions are NEVER granted directly to a user.
 
-```plaintext
-  USERS                ROLES              PERMISSIONS (endpoints)
-+----------+        +----------+        +--------------------------+
-| alice    |--+     | ADMIN    |--+     | POST /products  (create) |
-| bob      |--+---> | OPERATOR |--+---> | DELETE /products         |
-| carol    |--+     | VIEWER   |--+     | POST /inventory/consume  |
-+----------+        +----------+        | GET  /batches (read)    |
-    user-role         role-permission   +--------------------------+
-    assignment        assignment
-```
+![The NIST RBAC model: users are assigned to roles, roles are assigned to permissions — never users to permissions directly.](/assets/blog_assets/blog_13/rbac-nist-model.png)
 
 In FMIS, the *role→permission* mapping is the **endpoint-role matrix** in the design doc: every route carries its allowed roles. The *user→role* mapping is the `role` column in the `users` table — and it's also embedded in the JWT so the middleware never needs a DB hit.
 
@@ -438,6 +370,10 @@ r.Group(func(r chi.Router) {
 
 `r.With(mw)` applies middleware to ONE route; `r.Use(mw)` applies to the whole group. Every route's annotation from the design doc becomes one visible line of wiring — a reviewer can diff the code against the matrix line by line. **A route with no guard is fail-open — the one mistake RBAC can't forgive.**
 
+Each middleware is a function that receives the next handler and returns a new handler — they wrap each other like nesting dolls. That's why `r.Use` order matters and why `Auth` must be registered before `RequireRole`:
+
+![The middleware chain as chi sees it: CORS, Logging and Recoverer for the whole group, then Auth, then RequireRole on gated routes only, ending at the handler.](/assets/blog_assets/blog_13/middleware-chain.png)
+
 And on the client, RBAC looks like this — but remember, this is **UX, not security**:
 
 ```javascript
@@ -468,6 +404,22 @@ A user can still `fetch('DELETE /api/v1/products/x')` manually and the server wi
 - **Separation of duties** — the person who receives a batch (OPERATOR) shouldn't also be the only person who can adjust inventory losses (ADMIN). Roles separate conflicting responsibilities.
 - **Defense in depth** — RBAC is one layer: middleware + validation + transactions + audit logs. Compromise one layer, the others hold.
 - **Auditability** — "who did what" = identity (auth) + permission (RBAC) + the transaction log. Food-safety compliance (HACCP / SOC 2-style) demands this chain.
+
+## The full auth flow in action
+
+Putting it all together, here's the complete sequence — from the very first registration to a protected call and a logged-out session:
+
+![The full auth sequence: register and login issue the token pair, protected calls run through Auth then RequireRole, /auth/refresh rotates the tokens when the access token expires, and logout revokes the refresh token.](/assets/blog_assets/blog_13/full-sequence.png)
+
+Walking through it with an OPERATOR account:
+
+1. **Register** → the server bcrypt-hashes the password, inserts the user with `role = VIEWER`, and returns a token pair. **Login** does the same after a bcrypt compare.
+2. **Protected call** (`GET /products/` with `Authorization: Bearer ...`) → `Auth` verifies the signature and `exp`, then writes `{user_id, role}` into the request context. `RequireRole` checks the role against the route's allow-set → `200` with the products.
+3. **Consume inventory** (`POST /inventory/consume`) as a VIEWER → `Auth` passes, but `RequireRole(ADMIN, OPERATOR)` rejects the role → **403**. Two different failures, two different statuses, two different client reactions.
+4. **Refresh** — once the 15-minute access token expires and the client gets a 401, it sends *only* the refresh token to `/auth/refresh`. The server hashes it, finds it in the DB, checks it isn't revoked or expired, and **rotates it in one transaction**: revoke the old, insert the new, sign a fresh access token.
+5. **Logout** → the refresh token is marked revoked in the DB. The access token still lives out its 15 minutes, but no new tokens can be minted.
+
+Authentication and authorization never interleave in this flow — the 401 gate physically precedes everything, so an endpoint can't accidentally leak data before identity is established.
 
 ## Common attacks & mitigations (know your enemy)
 
