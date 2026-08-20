@@ -1,11 +1,20 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useMemo, useState } from "react"
 import Fuse from "fuse.js"
-import { ArrowUpDown, FileQuestion, Search, X } from "lucide-react"
+import { FileQuestion, Search, SlidersHorizontal, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { EmptyState } from "@/components/ui/empty-state"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
 import { ArticleCard, type ArticlePost } from "@/components/ArticleCard"
 import { cn } from "@/lib/utils"
 
@@ -13,12 +22,12 @@ interface BlogFilterProps {
   posts: ArticlePost[]
 }
 
-interface TagEntry {
+interface FilterEntry {
   label: string
   count: number
 }
 
-function TagButton({
+function Chip({
   label,
   count,
   active,
@@ -57,30 +66,40 @@ function TagButton({
   )
 }
 
+function countEntries(posts: ArticlePost[], key: "tags" | "category") {
+  const counts = new Map<string, FilterEntry>()
+  posts.forEach((post) => {
+    const values = key === "tags" ? post.tags : [post.category]
+    const seen = new Set<string>()
+    values.forEach((value) => {
+      const normalized = value.toLowerCase()
+      if (seen.has(normalized)) return
+      seen.add(normalized)
+      const entry = counts.get(normalized)
+      if (entry) entry.count += 1
+      else counts.set(normalized, { label: value, count: 1 })
+    })
+  })
+  return Array.from(counts.values()).sort(
+    (a, b) => b.count - a.count || a.label.localeCompare(b.label)
+  )
+}
+
+function toggle(list: string[], label: string) {
+  return list.some((item) => item.toLowerCase() === label.toLowerCase())
+    ? list.filter((item) => item.toLowerCase() !== label.toLowerCase())
+    : [...list, label]
+}
+
 export function BlogFilter({ posts }: BlogFilterProps) {
   const [query, setQuery] = useState("")
-  const [activeTag, setActiveTag] = useState("All")
+  const [selectedTags, setSelectedTags] = useState<string[]>([])
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([])
   const [sortNewest, setSortNewest] = useState(true)
-  const railRef = useRef<HTMLDivElement>(null)
-  const [railOverflow, setRailOverflow] = useState({ start: false, end: false })
+  const [open, setOpen] = useState(false)
 
-  const tagEntries = useMemo(() => {
-    const counts = new Map<string, TagEntry>()
-    posts.forEach((post) => {
-      const seen = new Set<string>()
-      post.tags.forEach((tag) => {
-        const key = tag.toLowerCase()
-        if (seen.has(key)) return
-        seen.add(key)
-        const entry = counts.get(key)
-        if (entry) entry.count += 1
-        else counts.set(key, { label: tag, count: 1 })
-      })
-    })
-    return Array.from(counts.values()).sort(
-      (a, b) => b.count - a.count || a.label.localeCompare(b.label)
-    )
-  }, [posts])
+  const tagEntries = useMemo(() => countEntries(posts, "tags"), [posts])
+  const categoryEntries = useMemo(() => countEntries(posts, "category"), [posts])
 
   const fuse = useMemo(
     () =>
@@ -98,9 +117,19 @@ export function BlogFilter({ posts }: BlogFilterProps) {
       result = fuse.search(query.trim()).map((r) => r.item)
     }
 
-    if (activeTag !== "All") {
+    if (selectedCategories.length > 0) {
       result = result.filter((post) =>
-        post.tags.some((tag) => tag.toLowerCase() === activeTag.toLowerCase())
+        selectedCategories.some(
+          (c) => c.toLowerCase() === post.category.toLowerCase()
+        )
+      )
+    }
+
+    if (selectedTags.length > 0) {
+      result = result.filter((post) =>
+        selectedTags.some((selected) =>
+          post.tags.some((tag) => tag.toLowerCase() === selected.toLowerCase())
+        )
       )
     }
 
@@ -108,46 +137,23 @@ export function BlogFilter({ posts }: BlogFilterProps) {
       const cmp = new Date(b.date).getTime() - new Date(a.date).getTime()
       return sortNewest ? cmp : -cmp
     })
-  }, [posts, query, activeTag, sortNewest, fuse])
+  }, [posts, query, selectedCategories, selectedTags, sortNewest, fuse])
 
-  useEffect(() => {
-    const el = railRef.current
-    if (!el) return
-
-    const update = () =>
-      setRailOverflow({
-        start: el.scrollLeft > 0,
-        end: el.scrollLeft + el.clientWidth < el.scrollWidth - 1,
-      })
-
-    update()
-    const observer = new ResizeObserver(update)
-    observer.observe(el)
-    el.addEventListener("scroll", update, { passive: true })
-    window.addEventListener("resize", update)
-    return () => {
-      observer.disconnect()
-      el.removeEventListener("scroll", update)
-      window.removeEventListener("resize", update)
-    }
-  }, [tagEntries])
-
-  const isFiltering = query.trim() !== "" || activeTag !== "All"
+  const activeFilterCount =
+    selectedTags.length + selectedCategories.length + (sortNewest ? 0 : 1)
+  const isFiltering = query.trim() !== "" || activeFilterCount > 0
 
   const clearFilters = () => {
     setQuery("")
-    setActiveTag("All")
+    setSelectedTags([])
+    setSelectedCategories([])
+    setSortNewest(true)
   }
-
-  const selectTag = (label: string) =>
-    setActiveTag((current) =>
-      current.toLowerCase() === label.toLowerCase() ? "All" : label
-    )
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="relative flex-1 max-w-md">
+      <div className="flex items-center gap-3">
+        <div className="relative flex-1">
           <Search
             className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none"
             aria-hidden="true"
@@ -162,59 +168,124 @@ export function BlogFilter({ posts }: BlogFilterProps) {
           />
         </div>
 
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setSortNewest((p) => !p)}
-          className="h-11 px-4 shrink-0 gap-2 font-mono text-xs"
-        >
-          <ArrowUpDown className="h-4 w-4" aria-hidden="true" />
-          {sortNewest ? "Newest First" : "Oldest First"}
-        </Button>
-      </div>
+        <Dialog open={open} onOpenChange={setOpen}>
+          <DialogTrigger asChild>
+            <Button
+              variant="outline"
+              className="h-11 shrink-0 gap-2 px-4 font-mono text-xs"
+              aria-label={`Open filters${activeFilterCount > 0 ? `, ${activeFilterCount} active` : ""}`}
+            >
+              <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
+              Filters
+              {activeFilterCount > 0 && (
+                <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground tabular-nums">
+                  {activeFilterCount}
+                </span>
+              )}
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Filter articles</DialogTitle>
+              <DialogDescription>
+                Refine by category, tags, and sort order.
+              </DialogDescription>
+            </DialogHeader>
 
-      <div className="relative" role="group" aria-label="Filter by tag">
-        <div
-          ref={railRef}
-          className="no-scrollbar flex items-center gap-1.5 overflow-x-auto py-1 -my-1"
-        >
-          <TagButton
-            label="All"
-            count={posts.length}
-            active={activeTag === "All"}
-            onClick={() => setActiveTag("All")}
-          />
-          {tagEntries.map(({ label, count }) => (
-            <TagButton
-              key={label}
-              label={label}
-              count={count}
-              active={activeTag.toLowerCase() === label.toLowerCase()}
-              onClick={() => selectTag(label)}
-            />
-          ))}
-        </div>
-        {railOverflow.start && (
-          <div
-            className="pointer-events-none absolute inset-y-0 left-0 w-8 bg-gradient-to-r from-background to-transparent"
-            aria-hidden="true"
-          />
-        )}
-        {railOverflow.end && (
-          <div
-            className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-background to-transparent"
-            aria-hidden="true"
-          />
-        )}
+            <div className="space-y-5">
+              <div className="space-y-2">
+                <p className="font-mono text-xs font-semibold tracking-widest uppercase text-muted-foreground">
+                  Sort by
+                </p>
+                <div className="flex gap-1.5">
+                  <Chip
+                    label="Newest first"
+                    active={sortNewest}
+                    onClick={() => setSortNewest(true)}
+                  />
+                  <Chip
+                    label="Oldest first"
+                    active={!sortNewest}
+                    onClick={() => setSortNewest(false)}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <p className="font-mono text-xs font-semibold tracking-widest uppercase text-muted-foreground">
+                  Category
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {categoryEntries.map(({ label, count }) => (
+                    <Chip
+                      key={label}
+                      label={label}
+                      count={count}
+                      active={selectedCategories.some(
+                        (c) => c.toLowerCase() === label.toLowerCase()
+                      )}
+                      onClick={() =>
+                        setSelectedCategories((current) =>
+                          toggle(current, label)
+                        )
+                      }
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <p className="font-mono text-xs font-semibold tracking-widest uppercase text-muted-foreground">
+                  Tags
+                </p>
+                <div className="flex max-h-40 flex-wrap content-start gap-1.5 overflow-y-auto py-1 -my-1">
+                  {tagEntries.map(({ label, count }) => (
+                    <Chip
+                      key={label}
+                      label={label}
+                      count={count}
+                      active={selectedTags.some(
+                        (t) => t.toLowerCase() === label.toLowerCase()
+                      )}
+                      onClick={() =>
+                        setSelectedTags((current) => toggle(current, label))
+                      }
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button
+                variant="ghost"
+                onClick={clearFilters}
+                disabled={!isFiltering}
+                className="gap-1 font-mono text-xs text-muted-foreground"
+              >
+                <X className="size-3" aria-hidden="true" />
+                Clear all
+              </Button>
+              <Button onClick={() => setOpen(false)} className="font-mono text-xs">
+                Show {filtered.length}{" "}
+                {filtered.length === 1 ? "article" : "articles"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
 
       <div className="flex items-center justify-between font-mono text-xs text-muted-foreground">
         <span>
           {filtered.length} of {posts.length} articles
-          {activeTag !== "All" && (
+          {activeFilterCount > 0 && (
             <>
               {" "}
-              · <span className="text-foreground">#{activeTag}</span>
+              ·{" "}
+              <span className="text-foreground">
+                {activeFilterCount}{" "}
+                {activeFilterCount === 1 ? "filter" : "filters"} active
+              </span>
             </>
           )}
           {query.trim() && (
@@ -248,28 +319,14 @@ export function BlogFilter({ posts }: BlogFilterProps) {
           icon={<FileQuestion className="h-6 w-6" />}
           title="No articles found"
           description={
-            <>
-              {query && (
-                <span>
-                  No results for <strong>&ldquo;{query}&rdquo;</strong>
-                  {activeTag !== "All" && (
-                    <span>
-                      {" "}
-                      in <strong>#{activeTag}</strong>
-                    </span>
-                  )}
-                  .
-                </span>
-              )}
-              {!query && activeTag !== "All" && (
-                <span>
-                  No articles tagged with <strong>#{activeTag}</strong>.
-                </span>
-              )}
-              {!query && activeTag === "All" && (
-                <span>There are no articles to display right now.</span>
-              )}
-            </>
+            query.trim() ? (
+              <span>
+                No results for <strong>&ldquo;{query.trim()}&rdquo;</strong> with
+                the current filters.
+              </span>
+            ) : (
+              <span>No articles match the current filters.</span>
+            )
           }
         />
       )}
