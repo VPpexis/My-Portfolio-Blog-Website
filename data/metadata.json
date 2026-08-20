@@ -66,6 +66,7 @@
         { "name": "TypeScript", "icon": "SiTypescript" },
         { "name": "JavaScript", "icon": "SiJavascript" },
         { "name": "Python", "icon": "SiPython" },
+        { "name": "Go", "icon": "SiGo" },
         { "name": "Next.js", "icon": "SiNextdotjs" },
         { "name": "AWS", "icon": "FaAws" },
         { "name": "Docker", "icon": "SiDocker" },

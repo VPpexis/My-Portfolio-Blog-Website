@@ -14,9 +14,9 @@ export function Hero() {
 
         <h1 className="text-4xl font-bold tracking-tight sm:text-5xl md:text-6xl text-balance">
           <AnimatedGreeting />
-        </h1>
-        <h1 className="text-4xl font-bold tracking-tight sm:text-5xl md:text-6xl text-balance">
-          <span className="text-foreground">I&apos;m {siteData.profile.name}</span>
+          <span className="block text-foreground">
+            I&apos;m {siteData.profile.name}
+          </span>
         </h1>
 
         <p className="mt-6 text-lg leading-relaxed text-muted-foreground max-w-2xl mx-auto text-balance">

@@ -25,7 +25,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
   const tagSet = new Set<string>()
   published.forEach((p) => p.tags.forEach((t) => tagSet.add(t)))
   const tags = Array.from(tagSet).map((tag) => ({
-    url: `${siteConfig.url}/blog/tags/${tag}`,
+    url: `${siteConfig.url}/blog/tags/${encodeURIComponent(tag)}`,
     lastModified: new Date().toISOString(),
     changeFrequency: "monthly" as const,
     priority: 0.4,

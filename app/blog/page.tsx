@@ -1,8 +1,10 @@
 import { BlogFilter } from "@/components/BlogFilter"
+import { FeaturedPost } from "@/components/FeaturedPost"
 import { Container } from "@/components/ui/container"
 import { PageHeader } from "@/components/ui/page-header"
 import { Section } from "@/components/ui/section"
 import { createMetadata } from "@/lib/metadata"
+import { getFeaturedPosts } from "@/lib/posts"
 import { posts } from "#site/content"
 
 export const metadata = createMetadata({
@@ -35,6 +37,8 @@ export default function BlogPage() {
     })
   )
 
+  const featuredPosts = getFeaturedPosts()
+
   return (
     <Section>
       <Container>
@@ -47,6 +51,14 @@ export default function BlogPage() {
           }
           description="Thoughts on DevOps, cloud architecture, software engineering, and everything in between."
         />
+
+        {featuredPosts.length > 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-10 md:mb-12">
+            {featuredPosts.map((post) => (
+              <FeaturedPost key={post.slug} post={post} />
+            ))}
+          </div>
+        )}
 
         <BlogFilter posts={postList} />
       </Container>

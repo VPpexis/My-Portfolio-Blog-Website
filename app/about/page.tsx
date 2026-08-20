@@ -95,7 +95,7 @@ export default function AboutPage() {
                     fill
                     priority
                     sizes="(max-width: 768px) 256px, 288px"
-                    className="object-cover object-mid"
+                    className="object-cover object-center"
                   />
                 </div>
               </div>
