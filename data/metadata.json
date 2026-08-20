@@ -71,5 +71,21 @@
         { "name": "AWS", "icon": "FaAws" },
         { "name": "Docker", "icon": "SiDocker" },
         { "name": "Linux", "icon": "SiLinux" }
+    ],
+    "certifications": [
+        {
+            "name": "AWS Certified Cloud Practitioner (CLF-C02)",
+            "issuer": "Amazon Web Services",
+            "date": "2026-06-30",
+            "credentialUrl": "https://www.credly.com/badges/d89a4c42-d41a-4582-8e8e-b52ec82ad8b1/linked_in_profile"
+        }
+    ],
+    "publications": [
+        {
+            "title": "Digitization Process for the Conservation of the Filipino Traditional Terno Dress",
+            "venue": "2022 IEEE 14th International Conference on Humanoid, Nanotechnology, Information Technology, Communication and Control, Environment, and Management (HNICEM)",
+            "year": 2022,
+            "doi": "https://doi.org/10.1109/HNICEM57413.2022.10109355"
+        }
     ]
 }

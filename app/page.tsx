@@ -2,6 +2,7 @@ import { Hero } from "@/components/Hero";
 import { FeaturedBlog } from "@/components/FeaturedBlog";
 import { Projects } from "@/components/Projects";
 import { Skills } from "@/components/Skills";
+import { Credentials } from "@/components/Credentials";
 import { Contact } from "@/components/Contact";
 import { createMetadata, siteConfig } from "@/lib/metadata";
 
@@ -30,6 +31,7 @@ export default function Home() {
       <FeaturedBlog />
       <Projects />
       <Skills />
+      <Credentials />
       <Contact />
     </>
   );
