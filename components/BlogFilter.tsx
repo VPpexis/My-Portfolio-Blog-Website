@@ -1,27 +1,85 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import Fuse from "fuse.js"
-import { Search, ArrowUpDown, FileQuestion } from "lucide-react"
-import { Badge } from "@/components/ui/badge"
+import { ArrowUpDown, FileQuestion, Search, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { EmptyState } from "@/components/ui/empty-state"
 import { ArticleCard, type ArticlePost } from "@/components/ArticleCard"
+import { cn } from "@/lib/utils"
 
 interface BlogFilterProps {
   posts: ArticlePost[]
+}
+
+interface TagEntry {
+  label: string
+  count: number
+}
+
+function TagButton({
+  label,
+  count,
+  active,
+  onClick,
+}: {
+  label: string
+  count?: number
+  active: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-4xl border px-3 font-mono text-xs transition-colors",
+        "focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
+        active
+          ? "border-transparent bg-primary text-primary-foreground"
+          : "border-border bg-background text-muted-foreground hover:border-ring/40 hover:text-foreground"
+      )}
+    >
+      {label}
+      {count !== undefined && (
+        <span
+          className={cn(
+            "tabular-nums",
+            active ? "text-primary-foreground/70" : "text-muted-foreground/60"
+          )}
+        >
+          {count}
+        </span>
+      )}
+    </button>
+  )
 }
 
 export function BlogFilter({ posts }: BlogFilterProps) {
   const [query, setQuery] = useState("")
   const [activeTag, setActiveTag] = useState("All")
   const [sortNewest, setSortNewest] = useState(true)
+  const railRef = useRef<HTMLDivElement>(null)
+  const [railOverflow, setRailOverflow] = useState({ start: false, end: false })
 
-  const allTags = useMemo(() => {
-    const tagSet = new Set<string>()
-    posts.forEach((p) => p.tags.forEach((t) => tagSet.add(t)))
-    return Array.from(tagSet).sort()
+  const tagEntries = useMemo(() => {
+    const counts = new Map<string, TagEntry>()
+    posts.forEach((post) => {
+      const seen = new Set<string>()
+      post.tags.forEach((tag) => {
+        const key = tag.toLowerCase()
+        if (seen.has(key)) return
+        seen.add(key)
+        const entry = counts.get(key)
+        if (entry) entry.count += 1
+        else counts.set(key, { label: tag, count: 1 })
+      })
+    })
+    return Array.from(counts.values()).sort(
+      (a, b) => b.count - a.count || a.label.localeCompare(b.label)
+    )
   }, [posts])
 
   const fuse = useMemo(
@@ -41,7 +99,9 @@ export function BlogFilter({ posts }: BlogFilterProps) {
     }
 
     if (activeTag !== "All") {
-      result = result.filter((p) => p.tags.includes(activeTag))
+      result = result.filter((post) =>
+        post.tags.some((tag) => tag.toLowerCase() === activeTag.toLowerCase())
+      )
     }
 
     return [...result].sort((a, b) => {
@@ -50,9 +110,43 @@ export function BlogFilter({ posts }: BlogFilterProps) {
     })
   }, [posts, query, activeTag, sortNewest, fuse])
 
+  useEffect(() => {
+    const el = railRef.current
+    if (!el) return
+
+    const update = () =>
+      setRailOverflow({
+        start: el.scrollLeft > 0,
+        end: el.scrollLeft + el.clientWidth < el.scrollWidth - 1,
+      })
+
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(el)
+    el.addEventListener("scroll", update, { passive: true })
+    window.addEventListener("resize", update)
+    return () => {
+      observer.disconnect()
+      el.removeEventListener("scroll", update)
+      window.removeEventListener("resize", update)
+    }
+  }, [tagEntries])
+
+  const isFiltering = query.trim() !== "" || activeTag !== "All"
+
+  const clearFilters = () => {
+    setQuery("")
+    setActiveTag("All")
+  }
+
+  const selectTag = (label: string) =>
+    setActiveTag((current) =>
+      current.toLowerCase() === label.toLowerCase() ? "All" : label
+    )
+
   return (
-    <div className="space-y-8">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+    <div className="space-y-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="relative flex-1 max-w-md">
           <Search
             className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none"
@@ -79,26 +173,68 @@ export function BlogFilter({ posts }: BlogFilterProps) {
         </Button>
       </div>
 
-      <div className="flex flex-wrap gap-2" role="group" aria-label="Filter by tag">
-        <Badge
-          variant={activeTag === "All" ? "default" : "outline"}
-          className="cursor-pointer h-8 px-3 text-xs font-mono transition-all"
-          onClick={() => setActiveTag("All")}
-          aria-pressed={activeTag === "All"}
+      <div className="relative" role="group" aria-label="Filter by tag">
+        <div
+          ref={railRef}
+          className="no-scrollbar flex items-center gap-1.5 overflow-x-auto py-1 -my-1"
         >
-          All
-        </Badge>
-        {allTags.map((tag) => (
-          <Badge
-            key={tag}
-            variant={activeTag === tag ? "default" : "outline"}
-            className="cursor-pointer h-8 px-3 text-xs font-mono transition-all"
-            onClick={() => setActiveTag(tag)}
-            aria-pressed={activeTag === tag}
+          <TagButton
+            label="All"
+            count={posts.length}
+            active={activeTag === "All"}
+            onClick={() => setActiveTag("All")}
+          />
+          {tagEntries.map(({ label, count }) => (
+            <TagButton
+              key={label}
+              label={label}
+              count={count}
+              active={activeTag.toLowerCase() === label.toLowerCase()}
+              onClick={() => selectTag(label)}
+            />
+          ))}
+        </div>
+        {railOverflow.start && (
+          <div
+            className="pointer-events-none absolute inset-y-0 left-0 w-8 bg-gradient-to-r from-background to-transparent"
+            aria-hidden="true"
+          />
+        )}
+        {railOverflow.end && (
+          <div
+            className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-background to-transparent"
+            aria-hidden="true"
+          />
+        )}
+      </div>
+
+      <div className="flex items-center justify-between font-mono text-xs text-muted-foreground">
+        <span>
+          {filtered.length} of {posts.length} articles
+          {activeTag !== "All" && (
+            <>
+              {" "}
+              · <span className="text-foreground">#{activeTag}</span>
+            </>
+          )}
+          {query.trim() && (
+            <>
+              {" "}
+              · <span className="text-foreground">&ldquo;{query.trim()}&rdquo;</span>
+            </>
+          )}
+        </span>
+        {isFiltering && (
+          <Button
+            variant="ghost"
+            size="xs"
+            onClick={clearFilters}
+            className="gap-1 font-mono text-muted-foreground"
           >
-            {tag}
-          </Badge>
-        ))}
+            <X className="size-3" aria-hidden="true" />
+            Clear
+          </Button>
+        )}
       </div>
 
       {filtered.length > 0 ? (
