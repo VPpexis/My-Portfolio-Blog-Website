@@ -1,6 +1,7 @@
 import type { IconType } from "react-icons"
 import {
   SiDocker,
+  SiGo,
   SiJavascript,
   SiLinux,
   SiNextdotjs,
@@ -18,6 +19,7 @@ const iconMap: Record<string, IconType> = {
   SiTypescript,
   SiJavascript,
   SiPython,
+  SiGo,
   SiNextdotjs,
   FaAws,
   SiDocker,
