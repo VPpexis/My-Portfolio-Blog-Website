@@ -213,6 +213,7 @@ body {
   padding: 0.125rem 0.375rem;
   font-size: 0.875em;
   font-weight: 500;
+  overflow-wrap: break-word;
 }
 
 .dark .prose :not(pre) > code {
@@ -221,4 +222,10 @@ body {
 
 .prose img {
   margin-inline: auto;
+}
+
+.prose table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
 }

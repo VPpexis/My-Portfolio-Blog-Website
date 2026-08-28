@@ -1,0 +1,469 @@
+---
+title: "REST Semantics & HTTP Status Codes — Explained With Real Code"
+slug: rest-semantics-http-status-codes-explained-with-real-code
+description: "A practical post about REST semantics and HTTP status codes for backend developers: what REST really is, how to design URLs, when to use each HTTP verb, and how to pick the right status code every time — with real Go code from a warehouse management API."
+date: 2026-08-28
+tags: ["REST", "HTTP", "API", "Go", "Backend", "Status Codes"]
+category: "Tutorials"
+isDraft: false
+featured: false
+---
+
+I spent the last few weeks building a warehouse management API and realized something after every bug I fixed: **almost every integration bug I had was a status-code or REST-semantics problem.** Testing my endpoints in Postman, I got `200 OK` for a conflict, a `500` for a row that simply didn't exist, and an empty body where I couldn't tell success from nothing. Get the status codes wrong and every consumer of your API ends up guessing at what happened.
+
+HTTP already has a standard language — REST semantics. This post is the guide I wish I had: **what REST really is, how to design URLs, when to use each verb, and how to pick the right status code every time** — with real Go code from the repository I'm using to learn it.
+
+---
+
+1. What REST Actually Is (and isn't)
+2. Give every THING its own URL
+3. Use the standard HTTP verbs for actions
+4. Use the standard status codes for answers
+5. Never make the server remember your past requests (stateless)
+
+**Precise version:** REST — **Re**presentational **S**tate **T**ransfer — is an architectural style defined by Roy Fielding in his 2000 PhD dissertation. In practice, a REST API means you model your domain as **resources** (nouns), address them with **URLs**, operate on them with **HTTP methods**, and communicate outcomes with **HTTP status codes** — instead of inventing your own verbs, URLs like `/products/delete`, and custom `{ success: true }` fields.
+
+### The restaurant analogy
+
+Imagine a restaurant where you and the kitchen never see each other — you talk through one waiter named HTTP. **REST is the etiquette you both agree on**, so any diner (client) can eat at any restaurant (API) without learning a new language.
+
+| You say to the waiter | HTTP meaning | Waiter's reply |
+| --- | --- | --- |
+| "Can I see the menu?" | `GET /menu` | `200 OK` — here you go |
+| "I'll have the pasta" | `POST /orders` | `201 Created` — order placed |
+| "This pasta is wrong, make it over" | `PUT /orders/7` | `200 OK` — full replacement |
+| "Actually, extra salt on that" | `PATCH /orders/7` | `200 OK` — partial change |
+| "Cancel my pasta order" | `DELETE /orders/7` | `204 No Content` — done |
+| "Is table 4 ready to pay?" | `GET /orders/7` | `404 Not Found` — no such order |
+
+**The magic trick:** because the etiquette is standard, a Postman collection, a `curl` command, and your Go tests all talk to your API the exact same way — and your API's answers mean the same thing in all of them.
+
+### The six REST constraints
+
+- **Client-server** — the UI and the data store evolve separately; the API is the wall between them
+- **Stateless** — each request carries everything needed; the server keeps no client context between requests
+- **Cacheable** — responses say whether they can be cached (`Cache-Control`, `ETag`)
+- **Uniform interface** — the SAME handful of verbs and codes work for every resource; this constraint is what this whole post is about
+- **Layered system** — proxies, load balancers, and other servers may sit in between without the client knowing
+- **Code on demand** (optional) — the server can send executable code; almost nobody uses it
+
+**Reality check:** production APIs are "REST-ish." Stripe, GitHub, and my FMIS-API implement the practical core (resources + verbs + status codes + statelessness) and skip the academic extras. That is completely normal and good.
+
+### The Richardson Maturity Model — where APIs really live
+
+![The Richardson Maturity Model — L0 smells like an RPC, L1 uses resources, L2 adds verbs and status codes, L3 adds hypermedia.](/assets/blog_assets/blog_14/richardson-maturity-model.png)
+
+**Almost every API you'll use or write is L2.** If someone asks "is this truly REST?" in an interview, the answer is: *it follows the L2 pragmatic model — resources, verbs, status codes.*
+
+## Anatomy of a Request — Who Decides the Status Code?
+
+The single most useful mental model: **each layer of your stack owns specific status codes.** Once you know that, choosing the right code becomes mechanical.
+
+![A request flows through the router, auth middleware, handler, and service to PostgreSQL — each layer owns its own status codes.](/assets/blog_assets/blog_14/request-sequence.png)
+
+Memorize the pattern:
+
+- **Router** answers `404` (no route) / `405` (wrong verb on an existing URL)
+- **Middleware** answers `401` (no valid identity) / `403` (identity OK but not allowed)
+- **Handler** answers `400` (bad JSON body, validator failures)
+- **Service** answers `404` (row doesn't exist), `409` (state conflict), `422` (business rule)
+- **500** is the safety net for anything unexpected
+
+This split is visible in every handler plus one central error translator (`writeError`)
+
+---
+
+## URL Design — Nouns, Not Verbs
+
+### The one rule
+
+**Nouns in the URL, verbs in the method.** The menu names dishes, not instructions. You'd never see "prepare-me-a-pasta" on a menu — just "Pasta."
+
+### Collection vs item — the two fundamental URL shapes
+
+```plain text
+# COLLECTION — the whole list
+GET    /api/v1/products          → list products
+POST   /api/v1/products          → add ONE product to the list
+
+# ITEM — one thing inside the collection
+GET    /api/v1/products/{id}     → read one product
+PATCH  /api/v1/products/{id}     → partially edit one product
+DELETE /api/v1/products/{id}     → remove one product
+```
+
+In chi, `{product_id}` is a **URL parameter** — the braces are a placeholder the router fills from the actual path: `chi.URLParam(r, product_id)`.
+
+### Nested resources — when one thing belongs to another
+
+In FMIS, batches *belong* to products (a batch is a lot of a product). Two industry-common designs:
+
+```plain text
+# Option A — nested (reads like a sentence, top-down)
+GET /api/v1/products/{product_id}/batches
+
+# Option B — flat with a filter (what FMIS does today)
+GET /api/v1/batches/product/{product_id}
+```
+
+Both are correct. Nested URLs read top-down and scale to deeper trees (`/products/{id}/batches/{id}/transactions`); flat URLs are easier to filter across parents. Real APIs mix both — **consistency matters more than purity.**
+
+### Query parameters — filtering, sorting, pagination
+
+Query params refine a COLLECTION without creating new URLs. They never change *what* the URL points to — only how much of it you get back:
+
+```plain text
+GET /api/v1/products?product_type=FINISHED_GOOD&limit=20&offset=40&sort=-created_at
+                      └───filter────┘              └──pagination──┘   └──sort──┘
+```
+
+FMIS reads them directly in the handler — `r.URL.Query().Get(product_type)` — then passes them to the service, which clamps them (limit default 20, max 100). Filtering is also where "GET with a body" is wrong: filters belong in the query string.
+
+### Naming conventions (the agreed-upon habits)
+
+- **Plural nouns** — `/products`, not `/product`
+- **Lowercase + hyphens** — `/finished-goods`; be consistent within a project
+- **Version in the URL** — `/api/v1/...` makes breaking changes survivable
+- **No verbs** — `/products/delete` is a design smell; that's `DELETE /products/{id}`
+- **Item IDs in the path, not the query** — `GET /products/{id}` not `GET /products?id=7`
+
+### Actions that don't fit CRUD — the quarantine problem
+
+Not every operation maps to create/read/update/delete. FMIS's **quarantine** is a *state transition* of a batch, not a field edit. Options used in industry:
+
+- **Action endpoint (FMIS's choice):** `PATCH /api/v1/batches/{batch_id}/quarantine` — reads as an English sentence, simple to implement
+- **State-machine update:** `PATCH /batches/{id}` with `{ status: QUARANTINED }` — more "pure," but the server must validate legal transitions
+- **POST action:** `POST /batches/{id}/quarantine` — common for actions with side effects (Stripe does this all the time)
+
+**The rule:** pick one, document it, be consistent. What you MUST NOT do: invent verbs (`/quarantineBatch`) or use GET for state-changing actions.
+
+## The HTTP Verbs — Your Toolbox
+
+### Two properties that decide everything: Safe and Idempotent
+
+**Safe** = the request never changes server state. Reading is safe; deleting is not. You can refresh a safe request 1,000 times with zero consequences.
+
+**Idempotent** = sending the SAME request twice produces the SAME result as sending it once. "Set the volume to 10" is idempotent; "turn the volume up" is not. **This is the property that makes retries safe** — and networks drop requests all the time.
+
+| Verb | Meaning | Safe? | Idempotent? | Typical success code |
+| --- | --- | --- | --- | --- |
+| GET | Read a resource | Yes | Yes | 200 |
+| POST | Create / trigger action | No | No | 201 |
+| PUT | Replace a resource entirely | No | Yes | 200 |
+| PATCH | Partially modify a resource | No | Usually no | 200 |
+| DELETE | Remove a resource | No | Yes | 204 |
+| HEAD | GET without a body (headers only) | Yes | Yes | 200 |
+| OPTIONS | Ask what's allowed (CORS preflight) | Yes | Yes | 204 |
+
+*PATCH is usually not idempotent ("add 5kg" twice = 10kg). HTTP doesn't guarantee it, so treat it as non-idempotent unless you design it otherwise.* **The one dangerous verb is POST** — that's why payment APIs (Stripe) use `Idempotency-Key` headers on POSTs (see §7).
+
+### The verb decision flowchart
+
+![Verb decision flowchart: safe? → GET/HEAD. Creates a new resource with a server-assigned ID? → POST/201. Replaces the entire resource? → PUT/200. Partial change or removal? → PATCH/200 or DELETE/204.](/assets/blog_assets/blog_14/verb-decision-flowchart.png)
+
+### GET — read, never change
+
+GET is safe AND idempotent: the server only reads. That is what makes caching, browser refresh, and prefetching harmless. **NEVER use GET for actions with side effects** — a GET that quarantines a batch would break the world: crawlers and prefetchers would quarantine everything.
+
+```go
+// internal/routers/products.go — GET /api/v1/products
+func (p *ProductRouter) list(w http.ResponseWriter, r *http.Request) {
+    productType := r.URL.Query().Get("product_type")
+    limit := r.URL.Query().Get("limit")
+    offset := r.URL.Query().Get("offset")
+
+    products, err := p.svc.List(r.Context(), productType, limit, offset)
+    if err != nil {
+        writeError(w, err)
+        return
+    }
+    writeJSON(w, http.StatusOK, products) // 200 OK
+}
+```
+
+### POST — create, the only non-idempotent verb
+
+POST creates a NEW thing and **the SERVER decides the ID** (FMIS uses UUID v4). Send it twice → two products. That's by design, and it's why clients must handle retries carefully.
+
+```go
+// internal/routers/products.go — POST /api/v1/products
+func (p *ProductRouter) create(w http.ResponseWriter, r *http.Request) {
+    var req schemas.CreateProductRequest
+    if err := decodeAndValidate(p.validate, w, r, &req); err != nil {
+        return // decodeAndValidate already wrote a 400
+    }
+    product, err := p.svc.Create(r.Context(), req)
+    if err != nil {
+        writeError(w, err) // 409 duplicate SKU, 500 unexpected
+        return
+    }
+    writeJSON(w, http.StatusCreated, product) // 201 Created
+}
+```
+
+### PATCH — partial update (the pointer trick)
+
+PATCH says: "change only these fields." The implementation trick in FMIS: request fields are **pointers** (`*string`, `*bool`). A nil pointer means "field not sent — leave it alone." Without pointers you can't distinguish `{ name: null }` from `{ name: empty string }` from "not sent at all."
+
+```go
+// internal/schemas/products.go — the PATCH trick: pointers
+type UpdateProductRequest struct {
+    SKU           *string `json:"sku" validate:"omitempty,max=100"`
+    Name          *string `json:"name" validate:"omitempty,max=200"`
+    UnitOfMeasure *string `json:"unit_of_measure" validate:"omitempty,max=20"`
+    IsPurchasable *bool   `json:"is_purchasable"`
+    IsSellable    *bool   `json:"is_sellable"`
+}
+```
+
+So the client can send `{ name: Bleached Flour }` and nothing else gets touched. **Why not PUT?** PUT means "here is the ENTIRE new state" — a client sending a partial body would *blank out* the missing fields. PATCH exists precisely for partial edits. (PUT is ideal for config-style resources where the whole thing is replaceable — that's why FMIS skips it.)
+
+### DELETE — remove, answer with 204
+
+FMIS does a **soft delete** (flags the row) so the audit trail survives — but the HTTP semantics stay the same: gone to the client. Success = **204 No Content** (no body to read).
+
+```go
+// internal/routers/products.go — DELETE → 204 No Content
+func (p *ProductRouter) delete(w http.ResponseWriter, r *http.Request) {
+    productID := chi.URLParam(r, "product_id")
+
+    if err := p.svc.SoftDelete(r.Context(), productID); err != nil {
+        writeError(w, err) // 409 active batches, 404 not found
+        return
+    }
+    writeJSON(w, http.StatusNoContent, nil) // 204: success, no body
+}
+```
+
+*Re-deleting:* the second DELETE returns 404 in FMIS (the service finds no row). Some APIs return 204 for repeat deletes (idempotent-style). Both are industry-accepted — **pick one and document it.**
+
+### HEAD & OPTIONS — the quiet verbs
+
+HEAD is GET without the body (checking existence or size). OPTIONS asks "what methods are allowed here?" — browsers use it as the **CORS preflight** before cross-origin requests. Middleware handles both automatically.
+
+## Status Codes — The Language of Outcomes
+
+### The five classes
+
+Every HTTP response starts with a 3-digit code. The FIRST digit tells the whole story:
+
+```plain text
+1xx  Informational  — keep going, I'm still working      (rare in APIs)
+2xx  Success        — green light, everything worked
+3xx  Redirection    — the thing moved — go over there
+4xx  Client error   — YOUR fault: bad request, bad auth   (your code/input)
+5xx  Server error   — MY fault: the server broke          (never your input's fault)
+```
+
+**The golden rule: 4xx = the client can fix it** (fix input, log in, ask permission). **5xx = the client can't do anything** (the server is broken — retry later, or don't). Clients write retry logic around this rule; get it wrong and you break their automation.
+
+### 2xx Success — green lights
+
+| Code | Name | Meaning | Body? |
+| --- | --- | --- | --- |
+| 200 | OK | It worked; here's the result | Yes — the resource |
+| 201 | Created | A NEW resource was created | Yes — the new resource |
+| 202 | Accepted | Accepted for later processing (async) | Usually a job id |
+| 204 | No Content | It worked; nothing to send back | NO body |
+
+- **200 vs 201:** 201 is for creation ONLY, and it's stronger — it tells the client "a new thing now exists, here it is." A nice industry addition: a `Location` header pointing at the new resource.
+- **204 vs 200:** 204 means "success with no body." Sending 200 with an empty body is a lesser design — clients must guess whether the empty body *is* the result. FMIS's `writeJSON(w, http.StatusNoContent, nil)` is textbook correct.
+- **202:** reserved for queues/jobs — "I took your order, the kitchen will cook it whenever."
+
+### 4xx Client Errors — "you did something wrong"
+
+| Code | Name | Meaning | FMIS usage |
+| --- | --- | --- | --- |
+| 400 | Bad Request | Malformed or invalid request | Invalid JSON, validator tags, bad UUIDs |
+| 401 | Unauthorized | No valid identity | Bad login, expired access token |
+| 403 | Forbidden | Valid identity, not allowed | `RequireRole` failures |
+| 404 | Not Found | Resource doesn't exist | Unknown product/batch IDs |
+| 405 | Method Not Allowed | URL exists, verb doesn't | `POST /products/{id}` (chi gives 404 today — see §8) |
+| 409 | Conflict | Request clashes with current state | Duplicate SKU, quarantine of DEPLETED batch, delete w/ active batches |
+| 410 | Gone | Existed, removed forever | Retired soft-deleted resources |
+| 422 | Unprocessable Entity | Well-formed but fails business rules | Batch without required expiration date |
+| 429 | Too Many Requests | Rate limited — slow down | future rate limiting |
+
+**409 vs 422 — the eternal debate.** FMIS splits them like this: **409 = state conflict** (the row exists but is in the wrong state) and **422 = domain/business rule** (semantically valid input that violates a rule). Both are "your request makes sense but can't be honored" — the distinction is taste, but **consistency is what matters.**
+
+### The status code decision tree
+
+![Status code decision tree: router decides 404/405, auth middleware decides 401/403, handler decides 400, service decides 404/409/422/500.](/assets/blog_assets/blog_14/status-code-decision-tree.png)
+
+### 5xx Server Errors — "the server broke"
+
+| Code | Name | Meaning | FMIS usage |
+| --- | --- | --- | --- |
+| 500 | Internal Server Error | Unexpected failure — bug or DB hiccup | `writeError` default branch |
+| 502 | Bad Gateway | Upstream gave a bad answer | behind a proxy (future) |
+| 503 | Service Unavailable | Can't handle requests right now | `/health` when DB is down |
+| 504 | Gateway Timeout | Upstream took too long | behind a proxy (future) |
+
+**Never leak details in 5xx bodies** — no stack traces, no SQL errors. Log the real error server-side (`slog.Error`) and return a generic `internal server error` to the client.
+
+## How It All Fits In Code — One Translator to Rule Them All
+
+Great structure is only worth something if every endpoint actually uses it. FMIS funnels every response through two helpers — one for success, one for errors — so responses are always consistent:
+
+```go
+// internal/routers/helpers.go — the two response helpers
+func writeJSON(w http.ResponseWriter, status int, v any) {
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(status)
+    _ = json.NewEncoder(w).Encode(v)
+}
+
+func writeErrorJSON(w http.ResponseWriter, status int, msg string) {
+    writeJSON(w, status, map[string]string{"error": msg})
+}
+```
+
+And the key architectural decision: the **service layer returns sentinel errors** (exported `errors.New` values), and the **router layer translates them into HTTP statuses**. The HTTP vocabulary lives ONLY in the routers — business logic stays HTTP-agnostic. This is a textbook pattern:
+
+```go
+// internal/routers/auth.go — the error → status code translator
+func writeError(w http.ResponseWriter, err error) {
+    switch {
+    case errors.Is(err, services.ErrDuplicate):
+        writeErrorJSON(w, http.StatusConflict, err.Error())
+    case errors.Is(err, services.ErrInvalidCredentials):
+        writeErrorJSON(w, http.StatusUnauthorized, err.Error())
+    case errors.Is(err, services.ErrProductNotFound),
+        errors.Is(err, services.ErrBatchNotFound):
+        writeErrorJSON(w, http.StatusNotFound, err.Error())
+    case errors.Is(err, services.ErrExpirationRequired):
+        writeErrorJSON(w, http.StatusUnprocessableEntity, err.Error())
+    case errors.Is(err, services.ErrInvalidBatchState):
+        writeErrorJSON(w, http.StatusConflict, err.Error())
+    // ErrInvalidRequest → 400, ErrDuplicateSKU → 409,
+    // ErrProductHasActiveBatches → 409, ErrInvalidRefreshToken → 401
+    default:
+        slog.Error("unhandled service error", "error", err)
+        writeErrorJSON(w, http.StatusInternalServerError, "internal server error")
+    }
+}
+```
+
+Notice the `default:` branch: unknown errors are **logged** with `slog.Error` and answered with a **generic 500** — never a stack trace, never SQL details. It makes the API contract readable at a glance:
+
+| Scenario | Service returns | Client gets |
+| --- | --- | --- |
+| POST /products with duplicate SKU | ErrDuplicateSKU | 409 Conflict |
+| POST /batches for RAW_MATERIAL with no expiration_date | ErrExpirationRequired | 422 Unprocessable Entity |
+| PATCH /batches/{id}/quarantine on a DEPLETED batch | ErrInvalidBatchState | 409 Conflict |
+| DELETE /products/{id} with active batches | ErrProductHasActiveBatches | 409 Conflict |
+| GET /products/not-a-uuid | ErrInvalidRequest | 400 Bad Request |
+| GET /products/{valid-uuid-no-row} | pgx.ErrNoRows → ErrProductNotFound | 404 Not Found |
+| DELETE /products/{id} as a VIEWER | never reaches the service | 403 Forbidden from RequireRole |
+| anything unexpected | — | 500 internal server error |
+
+---
+
+## Beyond the Basics — What Production APIs Add
+
+### Idempotency keys for dangerous POSTs
+
+POST is non-idempotent, but networks retry anyway. The industry answer (Stripe's contribution to the world): the client sends an `Idempotency-Key` header; the server remembers the first response for that key and replays it on retries — so a network retry never double-creates. In Postman, add `Idempotency-Key` as a request header and keep the same value when re-sending the request.
+
+```bash
+# POST with an Idempotency-Key — retry without double-creating
+KEY=$(uuidgen)   # one key per logical operation
+
+curl -X POST http://localhost:8080/api/v1/products \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: $KEY" \
+  -d '{"sku":"FLOUR-002","name":"Bread Flour","unit_of_measure":"kg","product_type":"RAW_MATERIAL","is_purchasable":true,"is_sellable":false}'
+
+# On a 5xx response, retry with the SAME key — the server replays the
+# first result instead of creating a second product.
+```
+
+For FMIS: `POST /api/v1/batches` (receiving stock!) is a perfect candidate — a retried request must not double-receive inventory.
+
+### ETag caching for read endpoints
+
+A catalog list is read-heavy and changes rarely — ideal for `ETag`/`If-None-Match` → `304`. Send a cheap hash of the list (or an `updated_at` watermark) as the `ETag`; when the client asks with `If-None-Match` and nothing changed, reply `304` with an **empty body** — zero bandwidth, zero DB query.
+
+### 201 + Location header on creation
+
+Industry norm: a create endpoint returns `201 Created`, the new resource in the body, AND `Location: /api/v1/products/<new-id>` in the headers, so clients can GET that URL without guessing. In FMIS that's a 1-line upgrade in the `create` handler.
+
+### 429 + Retry-After for rate limiting
+
+When you add rate limiting, the correct response shape is:
+
+```plain text
+HTTP/1.1 429 Too Many Requests
+Retry-After: 30
+Content-Type: application/json
+
+{ "error": "rate limit exceeded, try again in 30s" }
+```
+
+### Versioning, request IDs, and RFC 9457
+
+- **URL versioning** (`/api/v1`) — simple and lets old clients keep working during a v2 rollout. Additive changes are fine within a version; breaking changes go in the next one.
+- **Request IDs** — echo the `X-Request-Id` header in every log line so "this failed at 14:03" becomes a grep-able correlation ID across the stack.
+- **RFC 9457 Problem Details** — the structured upgrade of `{ error: ... }` with `type`, `title`, `status`, `detail`, `instance`. Clients can code against `type` instead of parsing strings, and it's a moderate refactor: `writeErrorJSON` is the single place to change.
+
+---
+
+## Common Pitfalls — Real Bugs People Ship
+
+- **200 with `{ success: false }`** — the body contradicts the status; caches, retries, and every client library break. The status code IS the answer; the body is the detail.
+- **500 for validation errors** — a client typo is a 4xx (the client's fault), not a server bug. Logging 500s for client mistakes also drowns your error alerts in noise.
+- **Using POST for everything** — you lose caching, idempotency semantics, and all REST benefits.
+- **Verbs in URLs** — `/products/delete`, `/getProduct`. The URL is a noun; the method is the verb.
+- **Leaking internals in 500s** — stack traces and SQL errors hand attackers a map of your system.
+- **204 with a body** — 204 must have an empty body; a body makes clients and proxies behave unpredictably.
+- **GET with a body** — filters belong in the query string; many proxies drop GET bodies silently.
+- **404 vs 403 on hidden resources** — if an OPERATOR shouldn't know a product exists, 404 hides its existence; 403 leaks it. Security-conscious APIs return 404 for both to avoid enumeration.
+- **No Content-Type header** — clients can't parse responses reliably.
+- **Inconsistent error shapes** — one endpoint `{ error: ... }`, another `{ message: ... }`, another nothing. Fix: one helper.
+- **405 not wired** — without `chimw.MethodNotAllowed`, chi answers 404 for a wrong verb on an existing URL. Adding that middleware is a small, real improvement.
+- **No pagination on list endpoints** — shipping 10,000 products in one response kills DB and network.
+- **Ignoring `Retry-After`** — rate-limited clients need to know WHEN to retry.
+
+---
+
+## The Checklist I Now Use Before Shipping Any Endpoint
+
+1. Does my URL name a thing (noun, plural, lowercase)?
+2. Is the verb correct — safe? idempotent? (POST only for creation/actions)
+3. Success code: `200` for reads/updates, `201` for creations, `204` for deletions?
+4. Does every failure path return the *most specific* correct code, including 409/422 splits?
+5. Do I consistently return the same error shape, with no 5xx leaking internals?
+6. Is the status-code mapping centralized in one translator (so the contract stays honest)?
+7. Does my list endpoint paginate, and do I document filter/sort params?
+8. Is my API versioned so breaking changes don't nuke clients?
+9. Would Stripe answer the same request the same way?
+
+---
+
+## Conclusion
+
+REST semantics aren't academic trivia. They're the contract that lets your API be consumed by anything, cached by your CDN, retried safely by clients, and debugged in one grep. The three principles that gave me the most return:
+
+1. **Nouns in URLs, verbs in methods** — URL design is a communication problem, not a style choice
+2. **One code per meaning, consistently** — 201 is created, 204 is success-with-no-body, 409 is state conflict, 422 is business rule. Pick once, honor everywhere
+3. **Centralize the translation** — sentinel errors in services, one `writeError` in routers. Consistency is the only way the contract survives a growing codebase
+
+And remember: when in doubt, ask **"what would Stripe do?"** and read their docs. They survived billions of requests.
+
+---
+
+## References
+
+- This repo — [FMIS-API on GitHub](https://github.com/VPpexis/fmis-api) — the Go project all examples come from
+- [RFC 9110 — HTTP Semantics](https://datatracker.ietf.org/doc/html/rfc9110)
+- [RFC 9111 — HTTP Caching (ETag, 304)](https://datatracker.ietf.org/doc/html/rfc9111)
+- [RFC 9457 — Problem Details for HTTP APIs](https://datatracker.ietf.org/doc/html/rfc9457)
+- [Roy Fielding's dissertation — where REST was defined](https://www.ics.uci.edu/~fielding/pubs/dissertation/restarchstyle.htm)
+- [Martin Fowler — the Richardson Maturity Model](https://martinfowler.com/articles/richardsonMaturityModel.html)
+- [MDN — HTTP status codes](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status) and [HTTP methods](https://developer.mozilla.org/en-US/docs/Web/HTTP/Methods)
+- [Stripe API reference — the gold standard](https://docs.stripe.com/api)
+- [Google API design guide](https://cloud.google.com/apis/design)
+- [OWASP API Security Top 10](https://owasp.org/API-Security/editions/2023/en/0x11-t10/)
+- [go-chi routing — the router used in the examples](https://go-chi.io)
+
+> 💡 A practical guide written while building [FMIS-API](https://github.com/VPpexis/fmis-api) — a food inventory management system in Go (PostgreSQL + chi router). Every example below is real code from that repo.
