@@ -32,7 +32,7 @@ You order a sandwich. The waiter takes your order, the chef decides how to prepa
 
 **Figure 1 — How a request moves through the API**
 
-![Request flows from user to router, service, repository, and database.](/assets/blog_assets/layered-architecture/figure-1.png)
+<img src="/assets/blog_assets/layered-architecture/figure-1.png" alt="Request flows from user to router, service, repository, and database." width="264" height="585" className="mx-auto" />
 
 **Read from top to bottom.** The result travels back through the same steps to the user.
 
@@ -101,7 +101,7 @@ Here is an illustrative allocation, assuming all three batches are eligible and 
 
 **Figure 3 — Filling a 15 kg request**
 
-![A 15 kg request takes 8 kg from batch A and 7 kg from batch B, leaving batch C untouched.](/assets/blog_assets/layered-architecture/figure-3.png)
+<img src="/assets/blog_assets/layered-architecture/figure-3.png" alt="A 15 kg request takes 8 kg from batch A and 7 kg from batch B, leaving batch C untouched." width="280" className="mx-auto" />
 
 *Afterward: A has 0 kg, B has 3 kg, and C still has 12 kg. Two outgoing ledger entries record deductions of 8 kg and 7 kg.*
 
