@@ -1,0 +1,15 @@
+sequenceDiagram
+    accTitle: Row locking prevents double consumption
+    accDescr: Bob waits while Alice holds the batch lock. After Alice commits a 7 kilogram deduction, Bob sees 3 kilograms and rolls back.
+    participant A as Alice
+    participant DB as PostgreSQL
+    participant B as Bob
+    A->>DB: Lock batch
+    DB-->>A: 10 kg available
+    B->>DB: Request same lock
+    Note over DB,B: Bob waits for Alice
+    A->>DB: Deduct 7 kg + write ledger
+    A->>DB: Commit and release lock
+    DB-->>B: Lock granted: 3 kg remain
+    Note over B: Needs 7 kg
+    B->>DB: Roll back

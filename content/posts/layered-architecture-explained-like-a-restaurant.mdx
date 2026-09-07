@@ -1,0 +1,190 @@
+---
+title: "Layered Architecture, Explained Like a Restaurant: Routers, Services, and Repositories"
+slug: layered-architecture-explained-like-a-restaurant
+description: "Understand routers, services, and repositories through a restaurant analogy, with inventory examples covering FEFO, transactions, row locking, and exact arithmetic."
+date: 2026-09-07
+tags: ["Backend", "Architecture", "Go", "PostgreSQL", "API"]
+category: "Tutorials"
+isDraft: false
+featured: false
+---
+
+> **A backend is easier to trust when every part has a clear job.** Routers handle the conversation, services make business decisions, and repositories read and write data.
+
+Imagine two warehouse operators trying to sell the last bag of flour at the same time. A neatly organized folder structure will not save the inventory by itself. The application needs rules about who can act, which stock can be used, and which changes must succeed together.
+
+That is where layered architecture becomes useful.
+
+This beginner-friendly guide uses a restaurant analogy and an inventory API example to follow one stock-consumption request from arrival to commit. The examples and diagrams illustrate the design; they are not an independent audit of the current FMIS repository.
+
+## 1. ELI5: run your API like a restaurant
+
+You order a sandwich. The waiter takes your order, the chef decides how to prepare it, and the stockroom clerk retrieves the ingredients. Nobody needs to do everybody else's job.
+
+| API part | Restaurant equivalent | Its job |
+| --- | --- | --- |
+| Middleware | Door staff | Check identity and the required role before a protected handler runs. |
+| Router / handler | Waiter | Read the HTTP request, call a service, and format the response. |
+| Schema | Order form | Define and validate the shape of the input. |
+| Service | Chef | Apply business rules and coordinate the complete operation. |
+| Repository | Stockroom clerk | Execute database queries and map the results. |
+| PostgreSQL | Inventory records | Store data and enforce database constraints. |
+
+**Figure 1 — How a request moves through the API**
+
+<img src="/assets/blog_assets/layered-architecture/figure-1.png" alt="Request flows from user to router, service, repository, and database." width="264" height="585" className="mx-auto" />
+
+**Read from top to bottom.** The result travels back through the same steps to the user.
+
+**Think of a restaurant:** the router is the waiter, the service is the chef, and the repository is the stockroom clerk.
+
+The benefit is practical: when a rule changes, you know where to look. A service layer provides a boundary for application operations and coordinates their responses, including transactions. [Service Layer — Martin Fowler](https://martinfowler.com/eaaCatalog/serviceLayer.html)
+
+## 2. Routers translate; services decide; repositories execute
+
+### The router speaks HTTP
+
+A router's handler answers technical questions: Which endpoint was called? Is the JSON readable? Which response status should be returned?
+
+For an endpoint such as `POST /api/v1/inventory/consume`, the handler decodes a request, validates it, calls the inventory service, and returns the resulting ledger entries. It does not choose stock batches or write SQL.
+
+**ELI5:** The waiter can tell you that your order form is incomplete. The chef decides whether the kitchen can actually prepare the order.
+
+### Schemas check the form, not the stockroom
+
+A quantity such as `"15.0000"` can have the correct format while still exceeding available stock.
+
+That distinction gives validation two homes:
+
+- **Schema validation:** Is the product ID formatted correctly? Is the quantity positive and within the accepted precision and range?
+- **Service validation:** Does the product exist? Are eligible batches available? Is there enough stock right now?
+
+In this example, malformed input maps to **400**, while insufficient stock maps to **409**. Those mappings belong at the HTTP edge; the service reports a domain error such as `ErrInsufficientStock`.
+
+### The service owns the business operation
+
+The service decides what must happen together. Consuming inventory means checking eligible stock, choosing allocations, changing balances, and recording movements.
+
+It also decides **when to start a transaction and when a locked read is required**. The repository performs the actual SQL, including `FOR UPDATE`, using that transaction.
+
+### The repository owns data-access mechanics
+
+The repository knows how to query batches and save a ledger entry. It receives values through query parameters and converts database rows into application data.
+
+For FEFO, SQL supplies the expiration ordering; the service decides how much to take from each returned batch. This split keeps allocation policy testable without a database.
+
+**ELI5:** The chef says, “Use ingredients that expire soonest.” The clerk retrieves the ordered list. The chef determines the amounts.
+
+## 3. Follow a 15 kg request from start to finish
+
+Assume an authorized operator requests 15 kg and the inventory contains enough eligible stock.
+
+**Figure 2 — The successful path and the exits that protect it**
+
+![Stock consumption validates access and input, locks stock, allocates quantities, and commits balances with ledger entries; failures return errors.](/assets/blog_assets/layered-architecture/figure-2.png)
+
+*Database errors during the locked read also exit through the transaction error path. Error responses are translated by the router.*
+
+The key boundary encloses both the stock update and the audit record. Saving a lower balance without its ledger entry would leave the system unable to explain where the stock went.
+
+**ELI5: a transaction is an all-or-nothing order.** Either the complete set of changes is saved, or the operation does not become a partial success.
+
+With pgx's `BeginFunc`, a callback that returns an error triggers rollback; a nil callback error leads to a commit attempt. The caller must still handle the function's returned error. [pgx transaction helper](https://pkg.go.dev/github.com/jackc/pgx/v5#BeginFunc)
+
+A crucial implementation detail: **check and return every write error.** Ignoring a failed write can undermine the transaction's all-or-nothing behavior.
+
+## 4. FEFO, explained with three bags of flour
+
+FEFO means **First-Expired, First-Out**: consume the eligible batch with the earliest expiration date first.
+
+Here is an illustrative allocation, assuming all three batches are eligible and have not expired:
+
+**Figure 3 — Filling a 15 kg request**
+
+<img src="/assets/blog_assets/layered-architecture/figure-3.png" alt="A 15 kg request takes 8 kg from batch A and 7 kg from batch B, leaving batch C untouched." width="280" className="mx-auto" />
+
+*Afterward: A has 0 kg, B has 3 kg, and C still has 12 kg. Two outgoing ledger entries record deductions of 8 kg and 7 kg.*
+
+In this example, the repository orders batches with `ORDER BY expiration_date ASC NULLS LAST`. Batches without expiration dates therefore appear after dated batches. Eligibility is a separate rule: an expiration sort alone does not establish whether a batch may be consumed.
+
+A pure selection function can return an allocation plan before any writes begin. Useful cases to test include an exact fit, a partial batch, several batches, empty stock, and an insufficient total.
+
+**ELI5:** Finish the milk that expires tomorrow before opening the carton that expires next week.
+
+## 5. Why two workers cannot both take the last stock
+
+Suppose only 10 kg remains. Alice requests 7 kg; Bob requests 7 kg. If both make decisions from the same old balance, the application can approve 14 kg of consumption from only 10 kg.
+
+**Figure 4 — A locked read makes the second worker wait**
+
+![Alice locks 10 kg and consumes 7 kg. Bob waits, then sees only 3 kg and rolls back his 7 kg request.](/assets/blog_assets/layered-architecture/figure-4.png)
+
+*Illustrative PostgreSQL Read Committed scenario: both operations lock the same existing batch before deciding, and that row remains eligible.*
+
+`FOR UPDATE` blocks conflicting writes and locking reads on those rows; it does **not** block ordinary reads. Locks normally last until transaction end. Stronger isolation can produce serialization errors instead of the illustrated result, and deadlocks require error handling. [PostgreSQL explicit locking](https://www.postgresql.org/docs/current/explicit-locking.html)
+
+**ELI5:** There is one stock clipboard. Alice finishes correcting it before Bob uses it to promise stock to someone else.
+
+The service owns this coordination; placing files in separate directories does not create the guarantee.
+
+## 6. The same pattern handles production orders
+
+A production workflow is more demanding than a single deduction. Completing an order consumes input batches, writes stock-movement entries, activates the finished output batch, calculates its expiration, and changes the order to COMPLETED.
+
+These changes belong inside one service-owned transaction. In this example, output stays RESERVED until it is ready, keeping unfinished goods out of ordinary consumption. Its output expiration is the earliest non-null input expiration.
+
+**ELI5:** Ingredients being assembled into a lunchbox are not a finished lunchbox you can sell yet. The kitchen updates the ingredients, finished meal, and order record together.
+
+State guards belong in the service too. “Complete only an IN_PROGRESS order” depends on current business state, not whether an HTTP body is valid.
+
+## 7. Three details worth getting right
+
+### Exact storage needs exact arithmetic too
+
+PostgreSQL `DECIMAL(10,4)` provides ten total decimal digits, with four after the decimal point. Its numeric arithmetic is exact where possible, unlike floating-point arithmetic. [PostgreSQL numeric types](https://www.postgresql.org/docs/current/datatype-numeric.html)
+
+Using strings at the request boundary and numeric database fields is not enough if quantities are converted to `float64` during calculations. **Exact arithmetic must be preserved throughout the operation.** For inventory arithmetic, use a suitable decimal representation or scaled integers with range checks throughout; formatting a float to four places does not restore lost precision.
+
+### Interfaces reduce coupling; they do not remove all of it
+
+Services can depend on small store interfaces, allowing fake implementations in unit tests. Repositories accept a `Querier` that can be backed by a pool or transaction.
+
+That makes testing easier, but pgx transaction types and PostgreSQL locking semantics still appear in the design. A database replacement may affect services, models, migrations, and tests as well as repositories. Separation limits changes; it does not promise a one-folder migration.
+
+### Test policy and database behavior separately
+
+- **Pure function tests:** Does FEFO allocate the correct quantities?
+- **Service tests with fakes:** Are invalid states rejected and write errors propagated?
+- **Router tests:** Are inputs and domain errors translated into the expected HTTP responses?
+- **Real PostgreSQL integration tests:** Do rollback, queries, constraints, and concurrent locking behave correctly?
+
+A fake transaction can test orchestration, but it cannot prove PostgreSQL concurrency behavior.
+
+## 8. When is the extra structure worth it?
+
+Layering adds interfaces, wiring, and more files to navigate. A tiny application may need much less ceremony.
+
+FMIS has a stronger reason to pay that cost: several records must agree after every stock movement, and concurrent operators can compete for the same inventory. Clear boundaries make those requirements easier to locate, review, and test.
+
+Use this question when adding a layer: **What kind of decision, change, or test does this boundary isolate?**
+
+And when deciding where code belongs, ask:
+
+- Does it speak HTTP? Put it at the router or middleware boundary.
+- Does it validate the shape of an input? Put it in the schema.
+- Does it decide what the business permits or what must happen together? Put it in the service.
+- Does it retrieve or persist data? Put it in the repository.
+
+The next time a stock deduction fails, you should be able to follow the request and name the layer responsible—without searching through one enormous handler.
+
+## References and further reading
+
+1. [Martin Fowler — Service Layer](https://martinfowler.com/eaaCatalog/serviceLayer.html) — application boundaries and coordination of business operations.
+
+2. [PostgreSQL — Explicit Locking](https://www.postgresql.org/docs/current/explicit-locking.html) — row locks, waiting, isolation caveats, and deadlocks.
+
+3. [PostgreSQL — Numeric Types](https://www.postgresql.org/docs/current/datatype-numeric.html) — decimal precision and exact versus approximate arithmetic.
+
+4. [pgx v5 — BeginFunc](https://pkg.go.dev/github.com/jackc/pgx/v5#BeginFunc) — callback-driven commit and rollback behavior.
+
+*All four figures are adapted from the original Mermaid diagrams in my Notion article. Stock quantities and dates in the worked examples are illustrative.*
