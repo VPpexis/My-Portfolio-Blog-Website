@@ -32,7 +32,7 @@ You order a sandwich. The waiter takes your order, the chef decides how to prepa
 
 **Figure 1 — How a request moves through the API**
 
-![Request flows from user to router, service, repository, and database.](/assets/blog_assets/layered-architecture/figure-1.svg)
+![Request flows from user to router, service, repository, and database.](/assets/blog_assets/layered-architecture/figure-1.png)
 
 **Read from top to bottom.** The result travels back through the same steps to the user.
 
@@ -81,7 +81,7 @@ Assume an authorized operator requests 15 kg and the inventory contains enough e
 
 **Figure 2 — The successful path and the exits that protect it**
 
-![Stock consumption validates access and input, locks stock, allocates quantities, and commits balances with ledger entries; failures return errors.](/assets/blog_assets/layered-architecture/figure-2.svg)
+![Stock consumption validates access and input, locks stock, allocates quantities, and commits balances with ledger entries; failures return errors.](/assets/blog_assets/layered-architecture/figure-2.png)
 
 *Database errors during the locked read also exit through the transaction error path. Error responses are translated by the router.*
 
@@ -101,7 +101,7 @@ Here is an illustrative allocation, assuming all three batches are eligible and 
 
 **Figure 3 — Filling a 15 kg request**
 
-![A 15 kg request takes 8 kg from batch A and 7 kg from batch B, leaving batch C untouched.](/assets/blog_assets/layered-architecture/figure-3.svg)
+![A 15 kg request takes 8 kg from batch A and 7 kg from batch B, leaving batch C untouched.](/assets/blog_assets/layered-architecture/figure-3.png)
 
 *Afterward: A has 0 kg, B has 3 kg, and C still has 12 kg. Two outgoing ledger entries record deductions of 8 kg and 7 kg.*
 
@@ -117,7 +117,7 @@ Suppose only 10 kg remains. Alice requests 7 kg; Bob requests 7 kg. If both make
 
 **Figure 4 — A locked read makes the second worker wait**
 
-![Alice locks 10 kg and consumes 7 kg. Bob waits, then sees only 3 kg and rolls back his 7 kg request.](/assets/blog_assets/layered-architecture/figure-4.svg)
+![Alice locks 10 kg and consumes 7 kg. Bob waits, then sees only 3 kg and rolls back his 7 kg request.](/assets/blog_assets/layered-architecture/figure-4.png)
 
 *Illustrative PostgreSQL Read Committed scenario: both operations lock the same existing batch before deciding, and that row remains eligible.*
 

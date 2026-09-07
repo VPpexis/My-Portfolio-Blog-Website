@@ -1,0 +1,22 @@
+flowchart TD
+    accTitle: A stock consumption request
+    accDescr: Validate identity and input, then lock and allocate stock inside a transaction. Errors never produce a success response.
+    A(["Consume 15 kg"]) --> B{"Identity and<br/>role valid?"}
+    B -->|No| X["401 / 403"]
+    B -->|Yes| C{"Input valid?"}
+    C -->|No| Y["400 · Invalid input"]
+    C -->|Yes| D["Begin transaction"]
+    D --> E["Lock eligible batches<br/>in expiration order"]
+    E --> F{"Enough stock?"}
+    F -->|No| G["Roll back<br/>409 · Insufficient stock"]
+    F -->|Yes| I["Allocate stock using FEFO"]
+    I --> J["Update balances<br/>and write ledger entries"]
+    J --> K{"Writes succeed?"}
+    K -->|No| L["Roll back<br/>Return error"]
+    K -->|Yes| M{"Commit succeeds?"}
+    M -->|No| O["Handle error<br/>Do not report success"]
+    M -->|Yes| N(["201 · Ledger entries"])
+    classDef failure fill:#fff1f2,stroke:#be6474,color:#532b33
+    classDef success fill:#edf7f2,stroke:#5c9679,color:#254b38
+    class X,Y,G,L,O failure
+    class N success

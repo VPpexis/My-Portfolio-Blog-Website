@@ -1,0 +1,11 @@
+flowchart TD
+    accTitle: FEFO allocation for a 15 kilogram request
+    accDescr: Take 8 kilograms from batch A and 7 from batch B. Batch C remains untouched.
+    R(["Request: 15 kg"]) --> A["Batch A · Sept 10<br/>8 kg available"]
+    A --> T["Take 8 kg<br/>7 kg still needed"]
+    T --> B["Batch B · Sept 15<br/>10 kg available"]
+    B --> V["Take 7 kg<br/>Request filled"]
+    V --> C["Batch C · Sept 20<br/>12 kg left untouched"]
+    C --> L(["Two ledger entries<br/>8 kg and 7 kg"])
+    classDef kept fill:#edf7f2,stroke:#5c9679,color:#254b38
+    class C,L kept

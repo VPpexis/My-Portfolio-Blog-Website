@@ -1,0 +1,7 @@
+flowchart TD
+    accTitle: The layers of an API request
+    accDescr: A request passes through the router, service, repository, and database. Each layer has one responsibility.
+    U([Client request]) --> R["Router / handler<br/>Translate HTTP"]
+    R --> S["Service<br/>Apply business rules"]
+    S --> P["Repository<br/>Execute queries"]
+    P --> D[("PostgreSQL<br/>Store data")]
